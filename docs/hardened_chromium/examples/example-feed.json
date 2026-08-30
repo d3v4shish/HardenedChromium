@@ -1,0 +1,30 @@
+{
+  "id": "example-news",
+  "name": "Example news",
+  "sourceUrl": "https://example.com/news",
+  "itemRoot": "main article",
+  "fields": [
+    {
+      "name": "title",
+      "selector": "h2, h3",
+      "mode": "text",
+      "required": true
+    },
+    {
+      "name": "link",
+      "selector": "a[href]",
+      "mode": "attr:href",
+      "required": true
+    },
+    {
+      "name": "summary",
+      "selector": "p",
+      "mode": "text"
+    },
+    {
+      "name": "published",
+      "selector": "time",
+      "mode": "attr:datetime"
+    }
+  ]
+}

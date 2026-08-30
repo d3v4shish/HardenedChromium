@@ -29,6 +29,7 @@ revision is supported through the porting workflow in
 4. [Port the overlay to a newer Chromium revision](docs/hardened_chromium/PORTING.md)
 5. [Understand feature behavior and validate a release](docs/hardened_chromium/FEATURES.md)
    and [VALIDATION.md](docs/hardened_chromium/VALIDATION.md)
+6. [Copy working broker, privacy, and RSS examples](docs/hardened_chromium/EXAMPLES.md)
 
 The detailed protocol and privacy-source references remain in
 `tools/hardened_chromium/ARCHITECTURE.md` and
