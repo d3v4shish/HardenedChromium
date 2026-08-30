@@ -1,0 +1,114 @@
+{
+  // See third_party/blink/renderer/platform/RuntimeEnabledFeatures.md
+  //
+  // This file should not be changed upstream.
+  //
+  // This file provides a way for downstream forks to customize
+  // runtime_enabled_features.json5. Downstream forks are able to modify
+  // this file to add new feature flags or modify existing ones.
+  // This file inherits parameters from runtime_enabled_features.json5,
+  // and they can not be changed in this file.
+  //
+  // Examples:
+  //
+  // Adding a new feature flag enabled by default:
+  // data: [
+  //   {
+  //     name: "NewFeature",
+  //     status: "stable",
+  //     base_feature: "none",
+  //   },
+  // ]
+  //
+  // Marking an existing feature as experimental:
+  // data: [
+  //   {
+  //     name: "ExistingFeature",
+  //     status: "experimental",
+  //   },
+  // ]
+  //
+  // Marking an existing feature as available on certain platforms:
+  // data: [
+  //   {
+  //     name: "ExistingFeature",
+  //     origin_trial_feature_name: "ExistingFeature",
+  //     origin_trial_os: ["win", "mac"],
+  //     origin_trial_allows_third_party: true,
+  //     status: {
+  //       "Win": "experimental",
+  //       "Mac": "experimental",
+  //       "Linux": "",
+  //       "Android":"stable"
+  //     },
+  //   },
+  // ]
+
+  data: [
+    // HardenedChromium downstream defaults. These deliberately trade Web
+    // compatibility for a smaller observable surface.
+    {
+      // Keep the standard API shape visible. Hardened mode redirects page
+      // reads and writes to a private facade instead of the system clipboard.
+      name: "AsyncClipboard",
+      status: "stable",
+      base_feature: "none",
+    },
+    {
+      name: "HardenedPrivacyMode",
+      status: "stable",
+      base_feature: "HardenedPrivacyMode",
+    },
+    {
+      // Present only the display containing the browser window to web
+      // content. This remains separate from HardenedPrivacyMode so users can
+      // restore upstream screen-enumeration behavior without disabling the
+      // other privacy protections in this build.
+      name: "HardenedCurrentScreenOnly",
+      status: "stable",
+      base_feature: "none",
+    },
+
+    // Permission-gated APIs that this build removes entirely. Keeping these
+    // overrides in the downstream file minimizes conflicts when rebasing.
+    { name: "ComputePressure" },
+    { name: "ContactsManager" },
+    {
+      name: "EyeDropperAPI",
+      public: true,
+      base_feature: "none",
+    },
+    { name: "FileSystemAccess" },
+    { name: "PaymentRequest" },
+    {
+      name: "Presentation",
+      public: true,
+      base_feature: "none",
+    },
+    {
+      name: "RemotePlayback",
+      public: true,
+      base_feature: "none",
+    },
+    { name: "Serial" },
+    { name: "WakeLock" },
+    {
+      name: "WebBluetooth",
+      public: true,
+      base_feature: "none",
+    },
+    { name: "WebHID" },
+    { name: "WebNFC" },
+    { name: "WebShare" },
+    {
+      name: "WebUSB",
+      public: true,
+      base_feature: "none",
+    },
+    {
+      name: "WebXR",
+      public: true,
+      base_feature: "none",
+    },
+  ]
+}

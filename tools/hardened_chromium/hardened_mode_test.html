@@ -1,0 +1,1212 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Hardened Chromium Test</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    font: 16px/1.45 system-ui, sans-serif;
+  }
+  body {
+    margin: 0;
+    min-height: 250vh;
+    background: Canvas;
+    color: CanvasText;
+  }
+  main {
+    width: min(1120px, calc(100% - 48px));
+    margin: 32px auto;
+  }
+  .attack-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483647;
+    pointer-events: none;
+    border: 12px solid #7b1fa2;
+  }
+  .card {
+    position: relative;
+    z-index: 2147483647;
+    margin: 16px 0;
+    padding: 16px;
+    border: 1px solid GrayText;
+    border-radius: 10px;
+    background: Canvas;
+  }
+  button,
+  input,
+  textarea {
+    box-sizing: border-box;
+    margin: 4px 0;
+    padding: 8px;
+    font: inherit;
+  }
+  input,
+  textarea {
+    width: 100%;
+  }
+  textarea {
+    min-height: 100px;
+  }
+  pre {
+    max-height: 300px;
+    overflow: auto;
+    white-space: pre-wrap;
+  }
+  video {
+    display: block;
+    width: min(100%, 640px);
+    height: auto;
+    min-height: 180px;
+    margin-top: 12px;
+    background: #111;
+    border: 1px solid #666;
+    object-fit: contain;
+  }
+  #display-preview {
+    width: 100%;
+    min-height: 0;
+    aspect-ratio: var(--display-preview-aspect-ratio, 16 / 9);
+  }
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 8px 0;
+  }
+  .toolbar button {
+    margin: 0;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 12px;
+  }
+  .metric {
+    padding: 10px;
+    border: 1px solid color-mix(in srgb, CanvasText 35%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, Canvas 88%, CanvasText 12%);
+  }
+  .metric h3 {
+    margin: 0 0 6px;
+    font-size: 1rem;
+  }
+  .cursor-targets {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 8px;
+  }
+  .cursor-target {
+    padding: 16px;
+    border: 1px dashed GrayText;
+    border-radius: 8px;
+    text-align: center;
+    user-select: text;
+  }
+  #api-log,
+  #activity-events {
+    max-height: 420px;
+  }
+</style>
+
+<div class="attack-overlay"></div>
+<main>
+  <h1>Hardened Chromium adversarial test</h1>
+  <p>
+    The purple frame is page content. The outer browser-owned frame is blue for
+    the shared app backend and red for a private hardened browser; it must
+    remain visible outside the page.
+  </p>
+
+  <section class="card">
+    <h2>Live state</h2>
+    <pre id="state"></pre>
+    <div class="toolbar">
+      <button id="passive-probes">Run passive probes</button>
+      <button id="permissions">Probe permissions</button>
+      <button id="devices">Enumerate devices</button>
+      <button id="idle">Start Idle Detector</button>
+      <button id="screens">Query exposed screens</button>
+      <button id="geolocation">Probe geolocation</button>
+      <button id="clipboard-read">Read clipboard text</button>
+      <button id="clipboard-write">Write clipboard text</button>
+      <button id="fullscreen">Request fullscreen</button>
+      <button id="pointer-lock">Request pointer lock</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>API request/answer inspector</h2>
+    <p>
+      This panel records the browser APIs this test page calls, the arguments
+      sent, and the value or error returned to page JavaScript.
+    </p>
+    <pre id="api-summary">No API probes have run yet.</pre>
+    <pre id="api-log"></pre>
+  </section>
+
+  <section class="card">
+    <h2>Tab, cursor, and window activity detectors</h2>
+    <div class="grid">
+      <div class="metric">
+        <h3>Tab/focus</h3>
+        <pre id="tab-state"></pre>
+      </div>
+      <div class="metric">
+        <h3>Cursor/pointer</h3>
+        <pre id="cursor-state"></pre>
+      </div>
+      <div class="metric">
+        <h3>Window/screen</h3>
+        <pre id="window-state"></pre>
+      </div>
+    </div>
+    <p>
+      Move across these boxes to test cursor-style changes visible to page
+      JavaScript.
+    </p>
+    <div class="cursor-targets">
+      <div class="cursor-target" style="cursor: default">default</div>
+      <div class="cursor-target" style="cursor: text">text</div>
+      <div class="cursor-target" style="cursor: crosshair">crosshair</div>
+      <div class="cursor-target" style="cursor: wait">wait</div>
+      <div class="cursor-target" style="cursor: not-allowed">not-allowed</div>
+    </div>
+    <h3>Activity event stream</h3>
+    <pre id="activity-events"></pre>
+  </section>
+
+  <section class="card">
+    <h2>Blocked user actions</h2>
+    <p>
+      This page calls <code>preventDefault()</code> for selection, clipboard,
+      context-menu, native drag, wheel, and navigation-key events.
+    </p>
+    <input id="copy" value="Select this text, then copy or cut it.">
+    <textarea id="paste" placeholder="Paste here. The page will try to block it."></textarea>
+    <p><a href="https://example.com/">Drag this native link</a></p>
+    <p>Right-click anywhere: Chromium's menu should still open.</p>
+    <p>Use the wheel, Page Down, or arrow keys: the page should still scroll.</p>
+  </section>
+
+  <section class="card">
+    <h2>Explicit virtual media</h2>
+    <p>
+      Launch Chromium with <code>run_with_virtual_media.sh</code>, then request
+      access here. Chromium must still show its normal permission prompt. The
+      preview should contain Chromium's synthetic camera stream and the audio
+      track must not come from the physical microphone.
+    </p>
+    <button id="media-start">Request camera and microphone</button>
+    <button id="camera-start">Request camera only</button>
+    <button id="microphone-start">Request microphone only</button>
+    <button id="media-repeat">Repeat last media request</button>
+    <button id="media-stop" disabled>Stop media</button>
+    <video id="media-preview" autoplay muted playsinline></video>
+    <pre id="media-state">Media not requested.</pre>
+  </section>
+
+  <section class="card">
+    <h2>User-controlled screen capture</h2>
+    <p>
+      This invokes <code>getDisplayMedia()</code>. Chromium must show its own
+      surface picker; the page must not choose a tab, window, or monitor on the
+      user's behalf.
+    </p>
+    <button id="display-start">Choose a surface to share</button>
+    <button id="display-stop" disabled>Stop sharing</button>
+    <video id="display-preview" autoplay muted playsinline></video>
+    <pre id="display-state">Display capture not requested.</pre>
+  </section>
+
+  <section class="card">
+    <h2>Observed events</h2>
+    <pre id="events"></pre>
+  </section>
+</main>
+
+<script>
+  const $ = selector => document.querySelector(selector);
+  const eventLog = [];
+  const activityLog = [];
+  const apiLog = [];
+  const activityCounts = new Map();
+  let idleDetector;
+  let mediaStream;
+  let displayStream;
+  let displayStateTimer;
+  let apiSequence = 0;
+  let lastPointerEvent;
+  let lastCursorStyle = '(unknown)';
+  let lastMoveLogTime = 0;
+  let rafLastTime;
+  let rafLargestGap = 0;
+  let rafTickCount = 0;
+
+  function log(message) {
+    eventLog.unshift(`${new Date().toLocaleTimeString()}  ${message}`);
+    eventLog.length = Math.min(eventLog.length, 50);
+    $('#events').textContent = eventLog.join('\n');
+  }
+
+  function eventTargetName(target) {
+    if (!target) {
+      return '(none)';
+    }
+    if (target === window) {
+      return 'window';
+    }
+    if (target === document) {
+      return 'document';
+    }
+    if (target.nodeType === Node.DOCUMENT_NODE) {
+      return 'document';
+    }
+    if (target.nodeType !== Node.ELEMENT_NODE) {
+      return String(target);
+    }
+    const id = target.id ? `#${target.id}` : '';
+    const classes = target.classList?.length
+      ? `.${Array.from(target.classList).join('.')}`
+      : '';
+    return `${target.tagName.toLowerCase()}${id}${classes}`;
+  }
+
+  function readProps(object, properties) {
+    const result = {};
+    for (const property of properties) {
+      try {
+        const value = object?.[property];
+        if (typeof value !== 'function') {
+          result[property] = value;
+        }
+      } catch (error) {
+        result[property] = `${error.name}: ${error.message}`;
+      }
+    }
+    return result;
+  }
+
+  function normalizeTrack(track) {
+    const result = readProps(track, [
+      'kind',
+      'label',
+      'enabled',
+      'muted',
+      'readyState',
+      'id',
+    ]);
+    try {
+      result.settings = track.getSettings();
+    } catch (error) {
+      result.settings = `${error.name}: ${error.message}`;
+    }
+    try {
+      result.constraints = track.getConstraints();
+    } catch (error) {
+      result.constraints = `${error.name}: ${error.message}`;
+    }
+    return result;
+  }
+
+  function normalizeScreenLike(screen) {
+    return readProps(screen, [
+      'label',
+      'left',
+      'top',
+      'width',
+      'height',
+      'availLeft',
+      'availTop',
+      'availWidth',
+      'availHeight',
+      'colorDepth',
+      'pixelDepth',
+      'isPrimary',
+      'isInternal',
+      'devicePixelRatio',
+    ]);
+  }
+
+  function normalizeValue(value, seen = new WeakSet(), depth = 0) {
+    if (value === undefined || value === null ||
+        typeof value === 'string' || typeof value === 'number' ||
+        typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value === 'bigint') {
+      return `${value}n`;
+    }
+    if (typeof value === 'function') {
+      return `[function ${value.name || 'anonymous'}]`;
+    }
+    if (value instanceof Error || value instanceof DOMException) {
+      return {
+        name: value.name,
+        message: value.message,
+      };
+    }
+    if (typeof Element !== 'undefined' && value instanceof Element) {
+      return eventTargetName(value);
+    }
+    if (typeof Event !== 'undefined' && value instanceof Event) {
+      return {
+        type: value.type,
+        isTrusted: value.isTrusted,
+        defaultPrevented: value.defaultPrevented,
+        target: eventTargetName(value.target),
+        relatedTarget: eventTargetName(value.relatedTarget),
+      };
+    }
+    if (typeof MediaStream !== 'undefined' && value instanceof MediaStream) {
+      return {
+        id: value.id,
+        active: value.active,
+        tracks: value.getTracks().map(normalizeTrack),
+      };
+    }
+    if (typeof MediaStreamTrack !== 'undefined' &&
+        value instanceof MediaStreamTrack) {
+      return normalizeTrack(value);
+    }
+    if (typeof MediaDeviceInfo !== 'undefined' &&
+        value instanceof MediaDeviceInfo) {
+      return readProps(value, ['kind', 'label', 'deviceId', 'groupId']);
+    }
+    if (typeof PermissionStatus !== 'undefined' &&
+        value instanceof PermissionStatus) {
+      return readProps(value, ['name', 'state']);
+    }
+    if (value && typeof value === 'object' &&
+        'coords' in value && 'timestamp' in value) {
+      return {
+        timestamp: value.timestamp,
+        coords: normalizeValue(value.coords, seen, depth + 1),
+      };
+    }
+    if (value && typeof value === 'object' &&
+        'latitude' in value && 'longitude' in value && 'accuracy' in value) {
+      return readProps(value, [
+        'latitude',
+        'longitude',
+        'accuracy',
+        'altitude',
+        'altitudeAccuracy',
+        'heading',
+        'speed',
+      ]);
+    }
+    if (typeof DOMRect !== 'undefined' && value instanceof DOMRect) {
+      return readProps(value, ['x', 'y', 'width', 'height', 'top', 'right',
+                              'bottom', 'left']);
+    }
+    if (value && typeof value === 'object' &&
+        'screens' in value && 'currentScreen' in value) {
+      return {
+        screens: Array.from(value.screens || []).map(normalizeScreenLike),
+        currentScreen: normalizeScreenLike(value.currentScreen),
+      };
+    }
+    if (value && typeof value === 'object' &&
+        'width' in value && 'height' in value && 'availWidth' in value) {
+      return normalizeScreenLike(value);
+    }
+    if (Array.isArray(value)) {
+      return value.map(item => normalizeValue(item, seen, depth + 1));
+    }
+    if (seen.has(value)) {
+      return '[circular]';
+    }
+    if (depth >= 3) {
+      return `[${value.constructor?.name || 'Object'}]`;
+    }
+    seen.add(value);
+    const result = {};
+    for (const key of Object.keys(value)) {
+      result[key] = normalizeValue(value[key], seen, depth + 1);
+    }
+    return result;
+  }
+
+  function stringify(value) {
+    try {
+      return JSON.stringify(normalizeValue(value), null, 2);
+    } catch (error) {
+      return String(value);
+    }
+  }
+
+  function addApiEntry(api, args) {
+    const entry = {
+      id: ++apiSequence,
+      api,
+      started: performance.now(),
+      time: new Date().toLocaleTimeString(),
+      request: stringify(args),
+      answer: '(pending)',
+      status: 'pending',
+      duration: '0.0ms',
+    };
+    apiLog.unshift(entry);
+    apiLog.length = Math.min(apiLog.length, 80);
+    renderApiLog();
+    return entry;
+  }
+
+  function finishApiEntry(entry, status, value) {
+    entry.status = status;
+    entry.duration = `${(performance.now() - entry.started).toFixed(1)}ms`;
+    entry.answer = stringify(value);
+    renderApiLog();
+  }
+
+  function renderApiLog() {
+    const counts = apiLog.reduce((accumulator, entry) => {
+      accumulator[entry.status] = (accumulator[entry.status] || 0) + 1;
+      return accumulator;
+    }, {});
+    $('#api-summary').textContent = [
+      `entries: ${apiLog.length}`,
+      `pending: ${counts.pending || 0}`,
+      `fulfilled: ${counts.fulfilled || 0}`,
+      `rejected: ${counts.rejected || 0}`,
+      'The newest API call is shown first.',
+    ].join('\n');
+    $('#api-log').textContent = apiLog.map(entry => [
+      `#${entry.id} ${entry.time}  ${entry.api}  ${entry.status}  ${entry.duration}`,
+      `request: ${entry.request}`,
+      `answer: ${entry.answer}`,
+    ].join('\n')).join('\n\n');
+  }
+
+  function wrapMethod(object, methodName, apiName) {
+    if (!object || typeof object[methodName] !== 'function') {
+      return;
+    }
+    const original = object[methodName];
+    if (original.__hardenedLogged) {
+      return;
+    }
+    const wrapped = function(...args) {
+      const entry = addApiEntry(apiName, args);
+      try {
+        const result = original.apply(this, args);
+        if (result && typeof result.then === 'function') {
+          return result.then(value => {
+            finishApiEntry(entry, 'fulfilled', value);
+            return value;
+          }, error => {
+            finishApiEntry(entry, 'rejected', error);
+            throw error;
+          });
+        }
+        finishApiEntry(entry, 'fulfilled', result);
+        return result;
+      } catch (error) {
+        finishApiEntry(entry, 'rejected', error);
+        throw error;
+      }
+    };
+    wrapped.__hardenedLogged = true;
+    try {
+      object[methodName] = wrapped;
+    } catch (error) {
+      log(`could not wrap ${apiName}: ${error.name}: ${error.message}`);
+    }
+  }
+
+  function wrapCallbackMethod(object, methodName, apiName) {
+    if (!object || typeof object[methodName] !== 'function') {
+      return;
+    }
+    const original = object[methodName];
+    if (original.__hardenedLogged) {
+      return;
+    }
+    const wrapped = function(...args) {
+      const entry = addApiEntry(apiName, args);
+      const originalSuccess = args[0];
+      const originalError = args[1];
+      if (typeof originalSuccess === 'function') {
+        args[0] = function(value) {
+          finishApiEntry(entry, 'fulfilled', value);
+          return originalSuccess.apply(this, arguments);
+        };
+      }
+      if (typeof originalError === 'function') {
+        args[1] = function(error) {
+          finishApiEntry(entry, 'rejected', error);
+          return originalError.apply(this, arguments);
+        };
+      }
+      try {
+        const result = original.apply(this, args);
+        if (methodName === 'watchPosition') {
+          entry.answer = stringify({watchId: result, awaitingFirstUpdate: true});
+          renderApiLog();
+        }
+        return result;
+      } catch (error) {
+        finishApiEntry(entry, 'rejected', error);
+        throw error;
+      }
+    };
+    wrapped.__hardenedLogged = true;
+    try {
+      object[methodName] = wrapped;
+    } catch (error) {
+      log(`could not wrap ${apiName}: ${error.name}: ${error.message}`);
+    }
+  }
+
+  function installApiLogger() {
+    wrapMethod(navigator.mediaDevices, 'getUserMedia',
+               'navigator.mediaDevices.getUserMedia');
+    wrapMethod(navigator.mediaDevices, 'getDisplayMedia',
+               'navigator.mediaDevices.getDisplayMedia');
+    wrapMethod(navigator.mediaDevices, 'enumerateDevices',
+               'navigator.mediaDevices.enumerateDevices');
+    wrapMethod(navigator.mediaDevices, 'getSupportedConstraints',
+               'navigator.mediaDevices.getSupportedConstraints');
+    wrapMethod(navigator.permissions, 'query', 'navigator.permissions.query');
+    wrapMethod(navigator.clipboard, 'read', 'navigator.clipboard.read');
+    wrapMethod(navigator.clipboard, 'readText', 'navigator.clipboard.readText');
+    wrapMethod(navigator.clipboard, 'write', 'navigator.clipboard.write');
+    wrapMethod(navigator.clipboard, 'writeText', 'navigator.clipboard.writeText');
+    wrapMethod(navigator.storage, 'estimate', 'navigator.storage.estimate');
+    wrapMethod(navigator, 'getBattery', 'navigator.getBattery');
+    wrapCallbackMethod(navigator.geolocation, 'getCurrentPosition',
+                       'navigator.geolocation.getCurrentPosition');
+    wrapCallbackMethod(navigator.geolocation, 'watchPosition',
+                       'navigator.geolocation.watchPosition');
+    wrapMethod(navigator.geolocation, 'clearWatch',
+               'navigator.geolocation.clearWatch');
+    wrapMethod(window, 'getScreenDetails', 'window.getScreenDetails');
+    wrapMethod(window.Notification, 'requestPermission',
+               'Notification.requestPermission');
+    wrapMethod(window.Element?.prototype, 'requestFullscreen',
+               'Element.requestFullscreen');
+    wrapMethod(document, 'exitFullscreen', 'document.exitFullscreen');
+    wrapMethod(window.Element?.prototype, 'requestPointerLock',
+               'Element.requestPointerLock');
+    wrapMethod(document, 'exitPointerLock', 'document.exitPointerLock');
+    if (typeof IdleDetector !== 'undefined') {
+      wrapMethod(IdleDetector, 'requestPermission',
+                 'IdleDetector.requestPermission');
+      wrapMethod(IdleDetector.prototype, 'start', 'IdleDetector.start');
+    }
+  }
+
+  function prevent(event) {
+    event.preventDefault();
+    log(`page canceled ${event.type}; defaultPrevented=${event.defaultPrevented}`);
+  }
+
+  for (const type of [
+    'copy',
+    'cut',
+    'paste',
+    'contextmenu',
+    'selectstart',
+    'dragstart',
+    'wheel',
+  ]) {
+    addEventListener(type, prevent, {capture: true, passive: false});
+  }
+
+  addEventListener('keydown', event => {
+    const scrollKey = [
+      'ArrowUp',
+      'ArrowDown',
+      'PageUp',
+      'PageDown',
+      'Home',
+      'End',
+    ].includes(event.key);
+    const clipboardKey =
+        (event.ctrlKey || event.metaKey) && ['a', 'c', 'v', 'x'].includes(event.key);
+    if (scrollKey || clipboardKey) {
+      prevent(event);
+    }
+  }, true);
+
+  function incrementActivity(type) {
+    activityCounts.set(type, (activityCounts.get(type) || 0) + 1);
+  }
+
+  function pointerEventSummary(event) {
+    const parts = [
+      `target=${eventTargetName(event.target)}`,
+      `related=${eventTargetName(event.relatedTarget)}`,
+      `client=${Math.round(event.clientX)},${Math.round(event.clientY)}`,
+      `screen=${Math.round(event.screenX)},${Math.round(event.screenY)}`,
+      `movement=${event.movementX || 0},${event.movementY || 0}`,
+      `buttons=${event.buttons}`,
+    ];
+    if ('pointerType' in event) {
+      parts.push(`pointer=${event.pointerType}/${event.pointerId}`);
+    }
+    const outside = event.clientX < 0 || event.clientY < 0 ||
+        event.clientX >= innerWidth || event.clientY >= innerHeight;
+    parts.push(`outsideViewport=${outside}`);
+    return parts.join(' ');
+  }
+
+  function activitySummary(event) {
+    if (event instanceof MouseEvent) {
+      return pointerEventSummary(event);
+    }
+    if (event.type === 'visibilitychange') {
+      return `visibilityState=${document.visibilityState} hidden=${document.hidden}`;
+    }
+    if (event.type === 'fullscreenchange') {
+      return `fullscreenElement=${eventTargetName(document.fullscreenElement)}`;
+    }
+    if (event.type === 'pointerlockchange') {
+      return `pointerLockElement=${eventTargetName(document.pointerLockElement)}`;
+    }
+    if (event.type === 'resize') {
+      return `inner=${innerWidth}x${innerHeight} outer=${outerWidth}x${outerHeight}`;
+    }
+    if (event.type === 'orientationchange') {
+      return `orientation=${screen.orientation?.type || '(none)'}`;
+    }
+    if (event.type === 'pagehide' || event.type === 'pageshow') {
+      return `persisted=${event.persisted}`;
+    }
+    return `target=${eventTargetName(event.target)}`;
+  }
+
+  function recordActivity(event) {
+    incrementActivity(event.type);
+    if (event instanceof MouseEvent) {
+      lastPointerEvent = event;
+    }
+
+    const now = performance.now();
+    const isNoisyMove =
+        event.type === 'mousemove' || event.type === 'pointermove';
+    if (isNoisyMove && now - lastMoveLogTime < 250) {
+      return;
+    }
+    if (isNoisyMove) {
+      lastMoveLogTime = now;
+    }
+
+    activityLog.unshift(
+        `${new Date().toLocaleTimeString()}  ${event.type}  ${activitySummary(event)}`);
+    activityLog.length = Math.min(activityLog.length, 80);
+    renderActivityLog();
+  }
+
+  function renderActivityLog() {
+    const counts = Array.from(activityCounts.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([type, count]) => `${type}:${count}`)
+      .join('  ');
+    $('#activity-events').textContent = [
+      counts ? `counts: ${counts}` : 'counts: none',
+      '',
+      ...activityLog,
+    ].join('\n');
+  }
+
+  function installActivityDetectors() {
+    const tabEvents = [
+      'blur',
+      'focus',
+      'freeze',
+      'pagehide',
+      'pageshow',
+      'resume',
+      'visibilitychange',
+    ];
+    const pointerEvents = [
+      'click',
+      'contextmenu',
+      'dragenter',
+      'dragleave',
+      'gotpointercapture',
+      'lostpointercapture',
+      'mousedown',
+      'mouseenter',
+      'mouseleave',
+      'mousemove',
+      'mouseout',
+      'mouseover',
+      'mouseup',
+      'pointercancel',
+      'pointerdown',
+      'pointerenter',
+      'pointerleave',
+      'pointermove',
+      'pointerout',
+      'pointerover',
+      'pointerup',
+    ];
+    const documentEvents = [
+      'fullscreenchange',
+      'pointerlockchange',
+      'selectionchange',
+    ];
+    const windowEvents = [
+      'orientationchange',
+      'resize',
+    ];
+
+    for (const type of tabEvents) {
+      addEventListener(type, recordActivity, true);
+    }
+    for (const type of pointerEvents) {
+      addEventListener(type, recordActivity, true);
+    }
+    for (const type of documentEvents) {
+      document.addEventListener(type, recordActivity, true);
+    }
+    for (const type of windowEvents) {
+      addEventListener(type, recordActivity, true);
+    }
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', event => {
+        incrementActivity('visualViewport.resize');
+        activityLog.unshift(`${new Date().toLocaleTimeString()}  visualViewport.resize  ` +
+            `size=${Math.round(window.visualViewport.width)}x${Math.round(window.visualViewport.height)} ` +
+            `offset=${Math.round(window.visualViewport.offsetLeft)},${Math.round(window.visualViewport.offsetTop)}`);
+        activityLog.length = Math.min(activityLog.length, 80);
+        renderActivityLog();
+      }, true);
+      window.visualViewport.addEventListener('scroll', event => {
+        incrementActivity('visualViewport.scroll');
+      }, true);
+    }
+  }
+
+  function updateCursorStyleProbe() {
+    if (!lastPointerEvent) {
+      return {
+        element: '(no pointer event yet)',
+        cursor: lastCursorStyle,
+      };
+    }
+    const x = Math.max(0, Math.min(innerWidth - 1, lastPointerEvent.clientX));
+    const y = Math.max(0, Math.min(innerHeight - 1, lastPointerEvent.clientY));
+    const element = document.elementFromPoint(x, y);
+    const cursor = element ? getComputedStyle(element).cursor : '(none)';
+    if (cursor !== lastCursorStyle) {
+      activityLog.unshift(`${new Date().toLocaleTimeString()}  cursor-style  ` +
+          `${lastCursorStyle} -> ${cursor} at ${eventTargetName(element)}`);
+      activityLog.length = Math.min(activityLog.length, 80);
+      lastCursorStyle = cursor;
+      renderActivityLog();
+    }
+    return {
+      element: eventTargetName(element),
+      cursor,
+      clampedClient: `${Math.round(x)},${Math.round(y)}`,
+    };
+  }
+
+  function renderLiveState() {
+    const idleState = idleDetector
+      ? `${idleDetector.userState}/${idleDetector.screenState}`
+      : 'not started';
+    $('#state').textContent = [
+      `document.visibilityState: ${document.visibilityState}`,
+      `document.hidden: ${document.hidden}`,
+      `document.hasFocus(): ${document.hasFocus()}`,
+      `IdleDetector: ${idleState}`,
+      `getUserMedia available: ${
+          typeof navigator.mediaDevices?.getUserMedia === 'function'}`,
+      `getDisplayMedia available: ${
+          typeof navigator.mediaDevices?.getDisplayMedia === 'function'}`,
+      `getScreenDetails available: ${typeof window.getScreenDetails === 'function'}`,
+      `geolocation available: ${Boolean(navigator.geolocation)}`,
+      `clipboard available: ${Boolean(navigator.clipboard)}`,
+    ].join('\n');
+
+    $('#tab-state').textContent = [
+      `visibilityState: ${document.visibilityState}`,
+      `hidden: ${document.hidden}`,
+      `hasFocus(): ${document.hasFocus()}`,
+      `fullscreenElement: ${eventTargetName(document.fullscreenElement)}`,
+      `pointerLockElement: ${eventTargetName(document.pointerLockElement)}`,
+      `userActivation.isActive: ${navigator.userActivation?.isActive}`,
+      `userActivation.hasBeenActive: ${navigator.userActivation?.hasBeenActive}`,
+      `largest requestAnimationFrame gap: ${rafLargestGap.toFixed(1)}ms`,
+      `requestAnimationFrame ticks: ${rafTickCount}`,
+    ].join('\n');
+
+    const cursorProbe = updateCursorStyleProbe();
+    const pointer = lastPointerEvent ? [
+      `last event: ${lastPointerEvent.type}`,
+      `client: ${Math.round(lastPointerEvent.clientX)},${Math.round(lastPointerEvent.clientY)}`,
+      `screen: ${Math.round(lastPointerEvent.screenX)},${Math.round(lastPointerEvent.screenY)}`,
+      `movement: ${lastPointerEvent.movementX || 0},${lastPointerEvent.movementY || 0}`,
+      `buttons: ${lastPointerEvent.buttons}`,
+      `outside viewport observed: ${
+          lastPointerEvent.clientX < 0 || lastPointerEvent.clientY < 0 ||
+          lastPointerEvent.clientX >= innerWidth ||
+          lastPointerEvent.clientY >= innerHeight}`,
+      `elementFromPoint: ${cursorProbe.element}`,
+      `computed cursor: ${cursorProbe.cursor}`,
+      `clamped client probe: ${cursorProbe.clampedClient}`,
+    ] : ['No mouse/pointer event observed yet.'];
+    $('#cursor-state').textContent = pointer.join('\n');
+
+    $('#window-state').textContent = [
+      `inner: ${innerWidth}x${innerHeight}`,
+      `outer: ${outerWidth}x${outerHeight}`,
+      `screen position: ${screenX},${screenY}`,
+      `devicePixelRatio: ${devicePixelRatio}`,
+      `screen: ${screen.width}x${screen.height}`,
+      `screen.avail: ${screen.availWidth}x${screen.availHeight}`,
+      `screen.orientation: ${screen.orientation?.type || '(none)'}`,
+      `visualViewport: ${window.visualViewport
+          ? `${Math.round(window.visualViewport.width)}x${Math.round(window.visualViewport.height)} ` +
+            `scale=${window.visualViewport.scale}`
+          : '(not available)'}`,
+    ].join('\n');
+  }
+
+  function tickAnimationFrame(time) {
+    if (rafLastTime !== undefined) {
+      rafLargestGap = Math.max(rafLargestGap, time - rafLastTime);
+    }
+    rafLastTime = time;
+    rafTickCount++;
+    requestAnimationFrame(tickAnimationFrame);
+  }
+
+  async function probePermissions() {
+    if (!navigator.permissions?.query) {
+      log('Permissions API unavailable');
+      return;
+    }
+    const permissionNames = [
+      'camera',
+      'microphone',
+      'clipboard-read',
+      'clipboard-write',
+      'geolocation',
+      'notifications',
+      'idle-detection',
+      'window-management',
+    ];
+    await Promise.allSettled(permissionNames.map(async name => {
+      try {
+        return await navigator.permissions.query({name});
+      } catch (error) {
+        return error;
+      }
+    }));
+    log('permission probe completed');
+  }
+
+  async function runPassiveProbes() {
+    try {
+      navigator.mediaDevices?.getSupportedConstraints?.();
+    } catch (error) {
+      // The API wrapper records the error.
+    }
+    await Promise.allSettled([
+      navigator.mediaDevices?.enumerateDevices?.(),
+      navigator.storage?.estimate?.(),
+      navigator.getBattery?.(),
+    ].filter(Boolean));
+    await probePermissions();
+    log('passive probes completed');
+  }
+
+  $('#passive-probes').addEventListener('click', runPassiveProbes);
+  $('#permissions').addEventListener('click', probePermissions);
+  $('#devices').addEventListener('click', async () => {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      log(`enumerateDevices returned ${devices.length} device(s)`);
+    } catch (error) {
+      log(`enumerateDevices error: ${error.name}: ${error.message}`);
+    }
+  });
+
+  $('#clipboard-read').addEventListener('click', async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      log(`clipboard readText returned ${text.length} character(s)`);
+    } catch (error) {
+      log(`clipboard readText error: ${error.name}: ${error.message}`);
+    }
+  });
+
+  $('#clipboard-write').addEventListener('click', async () => {
+    try {
+      const text = `Hardened Chromium clipboard probe ${new Date().toISOString()}`;
+      await navigator.clipboard.writeText(text);
+      log(`clipboard writeText completed (${text.length} character(s))`);
+    } catch (error) {
+      log(`clipboard writeText error: ${error.name}: ${error.message}`);
+    }
+  });
+
+  $('#fullscreen').addEventListener('click', async () => {
+    try {
+      const before = {
+        innerWidth,
+        innerHeight,
+        outerWidth,
+        outerHeight,
+        visualWidth: visualViewport?.width,
+        visualHeight: visualViewport?.height,
+      };
+      const result = document.documentElement.requestFullscreen({
+        navigationUI: 'hide',
+      });
+      if (result && typeof result.then === 'function') {
+        await result;
+      }
+      const after = {
+        innerWidth,
+        innerHeight,
+        outerWidth,
+        outerHeight,
+        visualWidth: visualViewport?.width,
+        visualHeight: visualViewport?.height,
+      };
+      log(`fullscreen request completed; element=${
+          eventTargetName(document.fullscreenElement)}`);
+      log(`fullscreen viewport before=${JSON.stringify(before)} after=${
+          JSON.stringify(after)}`);
+    } catch (error) {
+      log(`fullscreen request error: ${error.name}: ${error.message}`);
+    }
+  });
+
+  $('#pointer-lock').addEventListener('click', async () => {
+    try {
+      const result = document.body.requestPointerLock({
+        unadjustedMovement: false,
+      });
+      if (result && typeof result.then === 'function') {
+        await result;
+      }
+      log(`pointer lock request completed; element=${
+          eventTargetName(document.pointerLockElement)}`);
+    } catch (error) {
+      log(`pointer lock request error: ${error.name}: ${error.message}`);
+    }
+  });
+
+  $('#idle').addEventListener('click', async () => {
+    try {
+      const permission = await IdleDetector.requestPermission();
+      idleDetector = new IdleDetector();
+      idleDetector.addEventListener('change', () => {
+        log(`idle change: ${idleDetector.userState}/${idleDetector.screenState}`);
+      });
+      await idleDetector.start({threshold: 60_000});
+      log(`Idle Detector permission: ${permission}`);
+    } catch (error) {
+      log(`Idle Detector error: ${error.name}: ${error.message}`);
+    }
+  });
+
+  $('#screens').addEventListener('click', async () => {
+    try {
+      const details = await window.getScreenDetails();
+      log(`getScreenDetails exposed ${details.screens.length} screen(s)`);
+    } catch (error) {
+      log(`getScreenDetails error: ${error.name}: ${error.message}`);
+    }
+  });
+
+  $('#geolocation').addEventListener('click', async () => {
+    if (!navigator.geolocation) {
+      log('geolocation unavailable');
+      return;
+    }
+    const options = {
+      enableHighAccuracy: true,
+      timeout: 5000,
+      maximumAge: 0,
+    };
+    try {
+      const position = await new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, options);
+      });
+      log(`geolocation current position: ${JSON.stringify(
+          normalizeValue(position.coords))}`);
+    } catch (error) {
+      log(`geolocation current position error: ${error.name}: ${error.message}`);
+    }
+    try {
+      const watchId = navigator.geolocation.watchPosition(position => {
+        log(`geolocation watch update: ${JSON.stringify(
+            normalizeValue(position.coords))}`);
+        navigator.geolocation.clearWatch(watchId);
+      }, error => {
+        log(`geolocation watch error: ${error.name}: ${error.message}`);
+      }, options);
+      log(`geolocation watch started: ${watchId}`);
+    } catch (error) {
+      log(`geolocation watch start error: ${error.name}: ${error.message}`);
+    }
+  });
+
+  function stopMedia() {
+    if (mediaStream) {
+      for (const track of mediaStream.getTracks()) {
+        track.stop();
+      }
+      mediaStream = undefined;
+    }
+    $('#media-preview').srcObject = null;
+    $('#media-state').textContent = 'Media stopped.';
+    $('#media-stop').disabled = true;
+  }
+
+  let lastMediaConstraints = {
+    audio: true,
+    video: {width: {ideal: 640}, height: {ideal: 480}},
+  };
+
+  async function requestMedia(constraints) {
+    stopMedia();
+    lastMediaConstraints = constraints;
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+      $('#media-preview').srcObject = mediaStream;
+      const descriptions = mediaStream.getTracks().map(track => {
+        const settings = track.getSettings();
+        return [
+          `${track.kind}: ${track.label || '(label unavailable)'}`,
+          `  readyState=${track.readyState} enabled=${track.enabled}`,
+          `  settings=${JSON.stringify(settings)}`,
+        ].join('\n');
+      });
+      $('#media-state').textContent = descriptions.join('\n');
+      $('#media-stop').disabled = false;
+      log(`media granted with ${mediaStream.getTracks().length} track(s)`);
+    } catch (error) {
+      $('#media-state').textContent =
+          `Media request failed: ${error.name}: ${error.message}`;
+      log(`media request error: ${error.name}: ${error.message}`);
+    }
+  }
+
+  $('#media-start').addEventListener('click', () => requestMedia({
+    audio: true,
+    video: {width: {ideal: 640}, height: {ideal: 480}},
+  }));
+  $('#camera-start').addEventListener('click', () => requestMedia({
+    audio: false,
+    video: {width: {ideal: 640}, height: {ideal: 480}},
+  }));
+  $('#microphone-start').addEventListener('click', () => requestMedia({
+    audio: true,
+    video: false,
+  }));
+  $('#media-repeat').addEventListener('click', () =>
+    requestMedia(structuredClone(lastMediaConstraints)));
+
+  $('#media-stop').addEventListener('click', stopMedia);
+
+  function formatSize(width, height) {
+    if (!Number.isFinite(width) || !Number.isFinite(height) ||
+        width <= 0 || height <= 0) {
+      return '(not available)';
+    }
+    return `${Math.round(width)}x${Math.round(height)}`;
+  }
+
+  function setDisplayPreviewAspect(width, height) {
+    if (!Number.isFinite(width) || !Number.isFinite(height) ||
+        width <= 0 || height <= 0) {
+      return;
+    }
+    $('#display-preview').style.setProperty(
+        '--display-preview-aspect-ratio', `${width} / ${height}`);
+  }
+
+  function updateDisplayState(track, preview) {
+    if (!track || !preview || !displayStream) {
+      return;
+    }
+
+    const settings = track.getSettings();
+    const renderedRect = preview.getBoundingClientRect();
+    const settingsWidth = settings.width || 0;
+    const settingsHeight = settings.height || 0;
+    const intrinsicWidth = preview.videoWidth || 0;
+    const intrinsicHeight = preview.videoHeight || 0;
+
+    setDisplayPreviewAspect(
+        intrinsicWidth || settingsWidth, intrinsicHeight || settingsHeight);
+
+    $('#display-state').textContent = [
+      `video: ${track.label || '(label unavailable)'}`,
+      `readyState=${track.readyState} enabled=${track.enabled}`,
+      `website getSettings size: ${formatSize(settingsWidth, settingsHeight)}`,
+      `website video element size: ${formatSize(intrinsicWidth, intrinsicHeight)}`,
+      `CSS rendered preview size: ${formatSize(renderedRect.width, renderedRect.height)}`,
+      `settings=${JSON.stringify(settings)}`,
+    ].join('\n');
+  }
+
+  function stopDisplayCapture() {
+    if (displayStateTimer) {
+      clearInterval(displayStateTimer);
+      displayStateTimer = undefined;
+    }
+    if (displayStream) {
+      for (const track of displayStream.getTracks()) {
+        track.stop();
+      }
+      displayStream = undefined;
+    }
+    $('#display-preview').srcObject = null;
+    $('#display-state').textContent = 'Display capture stopped.';
+    $('#display-stop').disabled = true;
+  }
+
+  $('#display-start').addEventListener('click', async () => {
+    stopDisplayCapture();
+    try {
+      displayStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: false,
+      });
+      const preview = $('#display-preview');
+      preview.srcObject = displayStream;
+      const track = displayStream.getVideoTracks()[0];
+      updateDisplayState(track, preview);
+      preview.addEventListener('loadedmetadata', () => {
+        updateDisplayState(track, preview);
+        requestAnimationFrame(() => updateDisplayState(track, preview));
+      });
+      preview.addEventListener(
+          'resize', () => updateDisplayState(track, preview));
+      track.addEventListener(
+          'mute', () => updateDisplayState(track, preview));
+      track.addEventListener(
+          'unmute', () => updateDisplayState(track, preview));
+      displayStateTimer =
+          setInterval(() => updateDisplayState(track, preview), 1000);
+      $('#display-stop').disabled = false;
+      track.addEventListener('ended', stopDisplayCapture, {once: true});
+      log('display capture granted from a user-selected surface');
+    } catch (error) {
+      $('#display-state').textContent =
+          `Display capture request failed: ${error.name}: ${error.message}`;
+      log(`display capture request error: ${error.name}: ${error.message}`);
+    }
+  });
+
+  $('#display-stop').addEventListener('click', stopDisplayCapture);
+
+  installApiLogger();
+  installActivityDetectors();
+  requestAnimationFrame(tickAnimationFrame);
+  setInterval(renderLiveState, 250);
+  renderLiveState();
+  renderApiLog();
+  renderActivityLog();
+</script>

@@ -1,0 +1,80 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hardened Chromium dynamic performance fixture</title>
+  <style>
+    body { margin: 0; font: 16px/1.4 system-ui, sans-serif; }
+    header { position: sticky; top: 0; background: white; padding: 12px; z-index: 1; }
+    main { max-width: 820px; margin: auto; }
+    .feed-item { min-height: 88px; margin: 8px; padding: 12px; border: 1px solid #bbb; }
+  </style>
+</head>
+<body>
+<header>
+  <strong>Dynamic feed fixture</strong>
+  <span id="status">0</span>
+</header>
+<main id="feed" role="feed"></main>
+<script>
+(() => {
+  const params = new URLSearchParams(location.search);
+  const total = Math.max(1, Number(params.get('items') || 1200));
+  const batchSize = Math.max(1, Number(params.get('batch') || 3));
+  const intervalMs = Math.max(10, Number(params.get('interval') || 120));
+  const continuous = params.get('continuous') === '1';
+  const retained = Math.max(batchSize * 2, Number(params.get('retained') || 120));
+  const feed = document.getElementById('feed');
+  const status = document.getElementById('status');
+  let generated = 0;
+
+  const fill = (element, index) => {
+    element.dataset.itemId = String(index);
+    element.innerHTML = `<h2>Fixture author ${index % 17}</h2>
+      <p>Dynamic item number ${index} with deterministic searchable content.</p>
+      <time datetime="2026-01-01T00:00:00Z">item ${index}</time>
+      <a href="/fixture/items/${index}">Open item ${index}</a>`;
+  };
+
+  const addBatch = () => {
+    const fragment = document.createDocumentFragment();
+    for (let count = 0; count < batchSize && generated < total; count++) {
+      generated++;
+      let element = null;
+      if (feed.children.length >= retained) {
+        element = feed.firstElementChild;
+        element.remove();
+      } else {
+        element = document.createElement('article');
+        element.className = 'feed-item';
+        element.setAttribute('role', 'article');
+      }
+      fill(element, generated);
+      fragment.appendChild(element);
+    }
+    feed.appendChild(fragment);
+    status.textContent = String(generated);
+    window.fixtureGenerated = generated;
+    window.fixtureDone = generated >= total;
+    if (continuous && !window.fixtureDone) setTimeout(addBatch, intervalMs);
+  };
+
+  window.fixtureGenerated = 0;
+  window.fixtureDone = false;
+  let started = false;
+  window.startFixture = () => {
+    if (started) return false;
+    started = true;
+    addBatch();
+    return true;
+  };
+  window.advanceFixture = () => {
+    if (!started || window.fixtureDone) return false;
+    addBatch();
+    return true;
+  };
+})();
+</script>
+</body>
+</html>
