@@ -13,6 +13,8 @@ revision is supported through the porting workflow in
 ## What it adds
 
 - hardened camera, microphone, and location source selection;
+- a profile-owned Website View document with strict fake-source defaults,
+  exact-origin overrides, and an expert Settings editor;
 - clear red/private and blue/app-backend browser boundaries;
 - one visible Chromium process shared safely by local applications;
 - a loopback broker with REST, WebSocket, and SSE job APIs;
@@ -30,6 +32,7 @@ revision is supported through the porting workflow in
 5. [Understand feature behavior and validate a release](docs/hardened_chromium/FEATURES.md)
    and [VALIDATION.md](docs/hardened_chromium/VALIDATION.md)
 6. [Copy working broker, privacy, and RSS examples](docs/hardened_chromium/EXAMPLES.md)
+7. [Review Website View coverage and limitations](docs/hardened_chromium/FEATURES.md)
 
 The detailed protocol and privacy-source references remain in
 `tools/hardened_chromium/ARCHITECTURE.md` and

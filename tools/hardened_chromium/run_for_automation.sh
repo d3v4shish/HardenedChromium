@@ -28,7 +28,20 @@ if [[ -n "${named_profile}" ]]; then
 fi
 profile_directory="${HARDENED_CHROMIUM_PROFILE_DIRECTORY:-Default}"
 remote_debugging_address="${HARDENED_REMOTE_DEBUGGING_ADDRESS:-127.0.0.1}"
-remote_debugging_port="${HARDENED_REMOTE_DEBUGGING_PORT:-0}"
+# Chromium treats port 0 as an automation launch and exposes
+# navigator.webdriver. Keep CDP local but use a non-zero configurable port.
+remote_debugging_port="${HARDENED_REMOTE_DEBUGGING_PORT:-9222}"
+website_view_file="${HARDENED_WEBSITE_VIEW_FILE:-${HARDENED_PRIVACY_RULES_FILE:-${automation_profile}/HardenedWebsiteView.json}}"
+webdriver_mode="${HARDENED_WEBDRIVER_MODE:-}"
+if [[ -z "${webdriver_mode}" ]]; then
+  webdriver_mode="$(PYTHONPATH="${script_directory}" python3 -c '
+from pathlib import Path
+from hardened_website_view import load_document
+policy = load_document(Path(__import__("sys").argv[1]))["default"]
+print(policy["exposures"].get("automation", "hide"))
+' "${website_view_file}" 2>/dev/null || true)"
+  webdriver_mode="${webdriver_mode:-hide}"
+fi
 sandbox_helper="${CHROME_DEVEL_SANDBOX:-/usr/local/sbin/chrome-devel-sandbox}"
 wm_class="${HARDENED_CHROMIUM_WM_CLASS:-HardenedChromium}"
 media_mode="${HARDENED_MEDIA_MODE:-loop}"
@@ -71,6 +84,17 @@ if [[ "${remote_debugging_address}" != "127.0.0.1" &&
   exit 1
 fi
 
+if ! [[ "${remote_debugging_port}" =~ ^[1-9][0-9]*$ ]] ||
+    (( remote_debugging_port > 65535 )); then
+  echo "HARDENED_REMOTE_DEBUGGING_PORT must be a non-zero TCP port." >&2
+  exit 1
+fi
+
+if [[ "${webdriver_mode}" != "hide" && "${webdriver_mode}" != "report" ]]; then
+  echo "Unknown HARDENED_WEBDRIVER_MODE=${webdriver_mode}; expected hide or report." >&2
+  exit 1
+fi
+
 backend_flags=()
 backend_lock_held=0
 if [[ "${backend_capable}" == "1" ]]; then
@@ -88,24 +112,20 @@ if [[ "${backend_capable}" == "1" ]]; then
     )
   else
     # Do not let a simultaneous second launch win Chromium's profile singleton
-    # race before the backend-holding launcher has created DevToolsActivePort.
+    # race before the backend-holding launcher has bound its fixed CDP port.
     backend_ready=0
     for _ in {1..150}; do
-      if [[ -s "${automation_profile}/DevToolsActivePort" ]]; then
-        backend_port=""
-        backend_host_header="${remote_debugging_address}"
-        if [[ "${backend_host_header}" == "::1" ]]; then
-          backend_host_header="[::1]"
-        fi
-        IFS= read -r backend_port < "${automation_profile}/DevToolsActivePort" || true
-        if [[ "${backend_port}" =~ ^[0-9]+$ ]] &&
-           (exec 8<>"/dev/tcp/${remote_debugging_address}/${backend_port}" &&
-            printf 'GET /json/version HTTP/1.0\r\nHost: %s\r\n\r\n' "${backend_host_header}" >&8 &&
-            IFS= read -r backend_status <&8 &&
-            [[ "${backend_status}" == *" 200 "* ]]) 2>/dev/null; then
-          backend_ready=1
-          break
-        fi
+      backend_host_header="${remote_debugging_address}"
+      if [[ "${backend_host_header}" == "::1" ]]; then
+        backend_host_header="[::1]"
+      fi
+      if [[ "${remote_debugging_port}" =~ ^[1-9][0-9]*$ ]] &&
+         (exec 8<>"/dev/tcp/${remote_debugging_address}/${remote_debugging_port}" &&
+          printf 'GET /json/version HTTP/1.0\r\nHost: %s\r\n\r\n' "${backend_host_header}" >&8 &&
+          IFS= read -r backend_status <&8 &&
+          [[ "${backend_status}" == *" 200 "* ]]) 2>/dev/null; then
+        backend_ready=1
+        break
       fi
       if flock -n 9; then
         backend_lock_held=1
@@ -169,9 +189,8 @@ extra_flags+=(
   --hardened-default-location-source="${HARDENED_LOCATION_SOURCE:-fake}"
   --hardened-fake-location="${HARDENED_FAKE_LOCATION_LATITUDE:-28.6139},${HARDENED_FAKE_LOCATION_LONGITUDE:-77.2090},${HARDENED_FAKE_LOCATION_ACCURACY:-100}"
 )
-if [[ -n "${HARDENED_PRIVACY_RULES_FILE:-}" ]]; then
-  extra_flags+=(--hardened-privacy-rules-file="${HARDENED_PRIVACY_RULES_FILE}")
-fi
+extra_flags+=(--hardened-privacy-rules-file="${website_view_file}")
+extra_flags+=(--hardened-webdriver-mode="${webdriver_mode}")
 
 if [[ -n "${HARDENED_FAKE_AUDIO_FILE:-}" ]]; then
   extra_flags+=(--use-file-for-fake-audio-capture="${HARDENED_FAKE_AUDIO_FILE}")
@@ -230,7 +249,7 @@ echo "Starting Hardened Chromium automation profile:"
 echo "  Profile: ${automation_profile}"
 echo "  Profile directory: ${profile_directory}"
 if [[ "${backend_lock_held}" == "1" ]]; then
-  echo "  Backend: private loopback CDP (automatic port)"
+  echo "  Backend: private loopback CDP (${remote_debugging_address}:${remote_debugging_port})"
 elif [[ "${backend_capable}" == "1" ]]; then
   echo "  Backend: reusing the existing default-profile process"
 else

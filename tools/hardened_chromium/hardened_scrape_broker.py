@@ -44,11 +44,21 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 import urllib.error
 import urllib.request
 
+from hardened_website_view import (
+    SCHEMA_VERSION as WEBSITE_VIEW_SCHEMA_VERSION,
+    atomic_write_document as write_website_view,
+    load_document as load_website_view,
+    normalize_document as normalize_website_view,
+    normalize_origin as normalize_website_view_origin,
+    upsert_rule as upsert_website_view_rule,
+    warnings_for_policy as website_view_warnings,
+)
+
 
 DEFAULT_PORT = 8877
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 SCHEMA_VERSION = 1
-PRIVACY_SETTINGS_SCHEMA_VERSION = 2
+PRIVACY_SETTINGS_SCHEMA_VERSION = WEBSITE_VIEW_SCHEMA_VERSION
 TERMINAL_STATUSES = {"completed", "failed", "stopped", "interrupted"}
 MEDIA_MODES = {"loop", "obs", "synthetic", "system", "none"}
 AUDIO_CAPTURE_MODES = {"fake", "system"}
@@ -950,6 +960,7 @@ class BrokerConfig:
   cdp_endpoint: str
   output_root: Path
   token: str
+  website_view_file: Path | None = None
   no_auth: bool = False
   max_active_jobs: int = 8
   max_active_jobs_per_app: int = 2
@@ -1643,7 +1654,12 @@ class Broker:
     self.media_settings_file = self.state_dir / "browser_media_settings.json"
     self.location_settings_file = (
         self.state_dir / "browser_location_settings.json")
-    self.privacy_rules_file = self.state_dir / "browser_privacy_rules.json"
+    # The profile-scoped Website View document is the browser's source of
+    # truth. Keep the old broker-state location only for standalone legacy
+    # broker invocations that have not supplied a profile file.
+    self.privacy_rules_file = (
+        self.config.website_view_file or
+        self.state_dir / "browser_privacy_rules.json")
     self.loop_video_dir = self.state_dir / "loop_videos"
     self.events_file = self.state_dir / "events.jsonl"
     self.events_dir = self.state_dir / "events"
@@ -1797,57 +1813,50 @@ class Broker:
 
   def get_privacy_rules(self) -> list[dict[str, Any]]:
     with self.state_lock:
-      if not self.privacy_rules_file.exists():
-        return []
-      try:
-        value = json.loads(
-            self.privacy_rules_file.read_text(encoding="utf-8"))
-      except Exception:
-        return []
-      raw_rules = value.get("rules", []) if isinstance(value, dict) else []
-      return [rule for rule in raw_rules if isinstance(rule, dict)]
+      return list(load_website_view(self.privacy_rules_file)["rules"])
+
+  def get_website_view(self) -> dict[str, Any]:
+    with self.state_lock:
+      return load_website_view(self.privacy_rules_file)
+
+  def get_website_view_warnings(self) -> dict[str, Any]:
+    with self.state_lock:
+      document = load_website_view(self.privacy_rules_file)
+    return {
+        "default": website_view_warnings(document["default"]),
+        "rules": {
+            rule["origin"]: website_view_warnings(rule)
+            for rule in document["rules"]
+        },
+    }
+
+  def save_website_view(self, document: dict[str, Any]) -> dict[str, Any]:
+    with self.state_lock:
+      return write_website_view(
+          self.privacy_rules_file, normalize_website_view(document))
 
   def save_privacy_rule(self, request: dict[str, Any]) -> dict[str, Any]:
-    origin = normalize_site_origin(
+    origin = normalize_website_view_origin(
         request.get("origin") or request.get("site") or "")
     if not origin:
       raise ValueError("origin must be an http(s) website origin")
-    rule_id = base64.urlsafe_b64encode(origin.encode("utf-8")).decode(
-        "ascii").rstrip("=")
-    rule = {
-        "id": rule_id,
-        "origin": origin,
-        "cameraSource": privacy_source_value(
-            request.get("cameraSource"), "fake"),
-        "microphoneSource": privacy_source_value(
-            request.get("microphoneSource"), "fake"),
-        "locationSource": privacy_source_value(
-            request.get("locationSource"), "fake"),
-        "fakeCameraBackend": fake_camera_backend_value(
-            request.get("fakeCameraBackend"), "loop"),
-        "updatedAt": iso_time(time.time()),
-    }
     with self.state_lock:
-      rules = [entry for entry in self.get_privacy_rules()
-               if entry.get("id") != rule_id]
-      rules.append(rule)
-      rules.sort(key=lambda entry: str(entry.get("origin") or ""))
-      atomic_write_json(self.privacy_rules_file, {
-          "schemaVersion": PRIVACY_SETTINGS_SCHEMA_VERSION,
-          "rules": rules,
-      })
+      document = upsert_website_view_rule(
+          load_website_view(self.privacy_rules_file), request)
+      saved = write_website_view(self.privacy_rules_file, document)
+      rule = next(entry for entry in saved["rules"]
+                  if entry["origin"] == origin)
     return rule
 
   def delete_privacy_rule(self, rule_id: str) -> bool:
     with self.state_lock:
-      rules = self.get_privacy_rules()
-      remaining = [rule for rule in rules if rule.get("id") != rule_id]
-      if len(remaining) == len(rules):
+      document = load_website_view(self.privacy_rules_file)
+      remaining = [rule for rule in document["rules"]
+                   if rule.get("id") != rule_id]
+      if len(remaining) == len(document["rules"]):
         return False
-      atomic_write_json(self.privacy_rules_file, {
-          "schemaVersion": PRIVACY_SETTINGS_SCHEMA_VERSION,
-          "rules": remaining,
-      })
+      document["rules"] = remaining
+      write_website_view(self.privacy_rules_file, document)
       return True
 
   def save_location_settings(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -2753,6 +2762,18 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
           "media": self.broker.get_media_settings(),
           "location": self.broker.get_location_settings(),
           "rules": self.broker.get_privacy_rules(),
+          "websiteView": self.broker.get_website_view(),
+          "websiteViewWarnings": self.broker.get_website_view_warnings(),
+      })
+      return
+    if parts == ["service", "website-view"]:
+      if not self.require_admin(auth):
+        return
+      self.send_json({
+          "ok": True,
+          "document": self.broker.get_website_view(),
+          "warnings": self.broker.get_website_view_warnings(),
+          "settingsFile": str(self.broker.privacy_rules_file),
       })
       return
     if parts == ["service", "location-settings"]:
@@ -2879,6 +2900,18 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
             "media": media,
             "location": location,
             "rules": self.broker.get_privacy_rules(),
+            "websiteView": self.broker.get_website_view(),
+            "websiteViewWarnings": self.broker.get_website_view_warnings(),
+        })
+        return
+      if parts == ["service", "website-view"]:
+        if not self.require_admin(auth):
+          return
+        document = self.broker.save_website_view(self.read_json_body())
+        self.send_json({
+            "ok": True,
+            "document": document,
+            "warnings": self.broker.get_website_view_warnings(),
         })
         return
       if parts == ["service", "location-settings"]:
@@ -3432,6 +3465,8 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
             "POST /service/media-settings",
             "GET /service/privacy-settings",
             "POST /service/privacy-settings",
+            "GET /service/website-view",
+            "POST /service/website-view",
             "POST /service/loop-video",
             "GET /service/location-settings",
             "POST /service/location-settings",
@@ -7603,6 +7638,11 @@ def parse_args() -> argparse.Namespace:
       help="Private visible-Chromium CDP endpoint supplied by the supervisor.")
   parser.add_argument("--root", type=Path, default=default_output_root(),
                       help="Output root for broker job artifacts.")
+  parser.add_argument(
+      "--website-view-file", type=Path,
+      default=Path(os.environ["HARDENED_WEBSITE_VIEW_FILE"])
+      if os.environ.get("HARDENED_WEBSITE_VIEW_FILE") else None,
+      help="Profile-scoped Website View policy document.")
   parser.add_argument("--host", default="127.0.0.1")
   parser.add_argument("--port", type=int, default=DEFAULT_PORT)
   parser.add_argument("--token", default="",
@@ -7653,6 +7693,8 @@ def main() -> int:
       cdp_endpoint=args.cdp.rstrip("/"),
       output_root=args.root.expanduser().resolve(),
       token=token,
+      website_view_file=(args.website_view_file.expanduser().resolve()
+                         if args.website_view_file else None),
       no_auth=args.no_auth,
       max_active_jobs=args.max_active_jobs,
       max_active_jobs_per_app=args.max_active_jobs_per_app,

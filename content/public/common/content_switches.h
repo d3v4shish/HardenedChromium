@@ -38,6 +38,7 @@ CONTENT_EXPORT extern const char kDisableYUVImageDecoding[];
 CONTENT_EXPORT extern const char kHardenedFakeLocation[];
 CONTENT_EXPORT extern const char kHardenedDefaultLocationSource[];
 CONTENT_EXPORT extern const char kHardenedPrivacyRulesFile[];
+CONTENT_EXPORT extern const char kHardenedWebDriverMode[];
 CONTENT_EXPORT extern const char kDisableAcceleratedVideoEncode[];
 extern const char kDisableBackingStoreLimit[];
 CONTENT_EXPORT extern const char

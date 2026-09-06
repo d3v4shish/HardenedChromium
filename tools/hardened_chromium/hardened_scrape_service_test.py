@@ -3,8 +3,9 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-from pathlib import Path
+import json
 import os
+from pathlib import Path
 import subprocess
 import tempfile
 import threading
@@ -43,14 +44,12 @@ class ServiceOwnershipTest(unittest.TestCase):
         timeout_seconds=1,
         no_auth=True)
 
-  def test_discovers_ephemeral_loopback_endpoint(self) -> None:
+  def test_auto_uses_fixed_nonzero_loopback_endpoint(self) -> None:
     with tempfile.TemporaryDirectory() as directory:
       config = self.make_config(Path(directory))
       config.profile.mkdir(parents=True)
-      (config.profile / "DevToolsActivePort").write_text(
-          "43123\n/devtools/browser/id\n", encoding="utf-8")
       self.assertEqual(
-          "http://127.0.0.1:43123", discover_cdp_endpoint(config))
+          "http://127.0.0.1:9222", discover_cdp_endpoint(config))
 
   def test_ensure_reuses_healthy_browser_and_broker(self) -> None:
     with tempfile.TemporaryDirectory() as directory:
@@ -224,6 +223,12 @@ class ServiceOwnershipTest(unittest.TestCase):
           "#!/bin/bash\nprintf '%s\\n' \"$@\" > \"${FAKE_ARGUMENTS_FILE}\"\n",
           encoding="utf-8")
       fake_binary.chmod(0o700)
+      website_view_file = root / "profiles" / "private-test" / "HardenedWebsiteView.json"
+      website_view_file.parent.mkdir(parents=True)
+      website_view_file.write_text(json.dumps({
+          "default": {"exposures": {"automation": "report"}},
+          "rules": [],
+      }), encoding="utf-8")
       environment = os.environ.copy()
       environment.update({
           "CHROME_DEVEL_SANDBOX": str(fake_binary),
@@ -246,6 +251,7 @@ class ServiceOwnershipTest(unittest.TestCase):
       self.assertFalse(any(
           argument.startswith("--remote-debugging-") for argument in arguments))
       self.assertIn("--hardened-default-location-source=fake", arguments)
+      self.assertIn("--hardened-webdriver-mode=report", arguments)
       self.assertIn("--disable-vulkan", arguments)
 
   def test_normal_stop_only_terminates_broker(self) -> None:

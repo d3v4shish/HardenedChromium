@@ -1,0 +1,32 @@
+<style include="cr-shared-style settings-shared">
+  #document {
+    box-sizing: border-box;
+    font: var(--cr-body-font);
+    height: 280px;
+    margin: 8px 0;
+    resize: vertical;
+    width: 100%;
+  }
+  .status {
+    color: var(--cr-secondary-text-color);
+    margin-inline-end: 12px;
+  }
+</style>
+<div class="cr-row first">
+  <div class="flex cr-padded-text">
+    <div class="cr-title-text">Website view</div>
+    <div class="cr-secondary-text">
+      Control the identity, capabilities, and hardened behavior visible to websites in this profile.
+      Rules match exact origins; embedded third parties use their own rules.
+    </div>
+  </div>
+</div>
+<div class="cr-row continuation">
+  <textarea id="document" value="{{documentText_::input}}"
+      aria-label="Website View configuration"></textarea>
+</div>
+<div class="cr-row continuation">
+  <div class="flex status">[[status_]]</div>
+  <cr-button on-click="reload_">Reload</cr-button>
+  <cr-button class="action-button" on-click="save_">Save</cr-button>
+</div>

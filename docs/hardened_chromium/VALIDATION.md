@@ -19,7 +19,8 @@ changes.
 ```sh
 cd tools/hardened_chromium
 python3 -m unittest hardened_scrape_broker_test.py \
-  hardened_scrape_service_test.py hardened_scrape_security_test.py \
+  hardened_scrape_service_test.py hardened_website_view_test.py \
+  hardened_scrape_security_test.py \
   hardened_scrape_performance_test.py hardened_scrape_stream_test.py \
   hardened_scrape_install_test.py
 ```
@@ -51,7 +52,12 @@ one client in token mode and another in no-auth mode against the same broker.
 Use `hardened_mode_test.html` in a named profile and test camera only,
 microphone only, both, and location. Verify that changing source selection does
 not bypass the ordinary permission prompt. Save a per-origin fake-source rule,
-restart the browser, and confirm it remains fake from the first request.
+restart the browser, and confirm it remains fake from the first request. Also
+open `chrome://settings/privacy`, save a Website View rule for
+`https://example.test`, and confirm it does not affect
+`https://sub.example.test` or an embedded third-party frame. Start through the
+automation launcher, then verify `navigator.webdriver` is `false`; repeat with
+`HARDENED_WEBDRIVER_MODE=report` to confirm the user-visible control works.
 
 ## Crash triage
 

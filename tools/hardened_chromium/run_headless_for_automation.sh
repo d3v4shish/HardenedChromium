@@ -9,7 +9,18 @@ chromium_binary="$(resolve_hardened_chromium_binary "${source_directory}")"
 automation_profile="${HARDENED_AUTOMATION_PROFILE:-${source_directory}/out/HardenedAutomationProfile}"
 profile_directory="${HARDENED_CHROMIUM_PROFILE_DIRECTORY:-Default}"
 remote_debugging_address="${HARDENED_REMOTE_DEBUGGING_ADDRESS:-127.0.0.1}"
-remote_debugging_port="${HARDENED_REMOTE_DEBUGGING_PORT:-0}"
+remote_debugging_port="${HARDENED_REMOTE_DEBUGGING_PORT:-9222}"
+website_view_file="${HARDENED_WEBSITE_VIEW_FILE:-${HARDENED_PRIVACY_RULES_FILE:-${automation_profile}/HardenedWebsiteView.json}}"
+webdriver_mode="${HARDENED_WEBDRIVER_MODE:-}"
+if [[ -z "${webdriver_mode}" ]]; then
+  webdriver_mode="$(PYTHONPATH="${script_directory}" python3 -c '
+from pathlib import Path
+from hardened_website_view import load_document
+policy = load_document(Path(__import__("sys").argv[1]))["default"]
+print(policy["exposures"].get("automation", "hide"))
+' "${website_view_file}" 2>/dev/null || true)"
+  webdriver_mode="${webdriver_mode:-hide}"
+fi
 headless_window_size="${HARDENED_HEADLESS_WINDOW_SIZE:-1365,900}"
 sandbox_helper="${CHROME_DEVEL_SANDBOX:-/usr/local/sbin/chrome-devel-sandbox}"
 wm_class="${HARDENED_CHROMIUM_WM_CLASS:-HardenedChromium}"
@@ -45,6 +56,17 @@ if [[ "${remote_debugging_address}" != "127.0.0.1" &&
       "${HARDENED_ALLOW_NON_LOOPBACK_DEBUGGING:-0}" != "1" ]]; then
   echo "Refusing to expose remote debugging on ${remote_debugging_address}." >&2
   echo "Use HARDENED_ALLOW_NON_LOOPBACK_DEBUGGING=1 only on a trusted network." >&2
+  exit 1
+fi
+
+if ! [[ "${remote_debugging_port}" =~ ^[1-9][0-9]*$ ]] ||
+    (( remote_debugging_port > 65535 )); then
+  echo "HARDENED_REMOTE_DEBUGGING_PORT must be a non-zero TCP port." >&2
+  exit 1
+fi
+
+if [[ "${webdriver_mode}" != "hide" && "${webdriver_mode}" != "report" ]]; then
+  echo "Unknown HARDENED_WEBDRIVER_MODE=${webdriver_mode}; expected hide or report." >&2
   exit 1
 fi
 
@@ -99,9 +121,8 @@ extra_flags+=(
   --hardened-default-location-source="${HARDENED_LOCATION_SOURCE:-fake}"
   --hardened-fake-location="${HARDENED_FAKE_LOCATION_LATITUDE:-28.6139},${HARDENED_FAKE_LOCATION_LONGITUDE:-77.2090},${HARDENED_FAKE_LOCATION_ACCURACY:-100}"
 )
-if [[ -n "${HARDENED_PRIVACY_RULES_FILE:-}" ]]; then
-  extra_flags+=(--hardened-privacy-rules-file="${HARDENED_PRIVACY_RULES_FILE}")
-fi
+extra_flags+=(--hardened-privacy-rules-file="${website_view_file}")
+extra_flags+=(--hardened-webdriver-mode="${webdriver_mode}")
 
 if [[ -n "${HARDENED_FAKE_AUDIO_FILE:-}" ]]; then
   extra_flags+=(--use-file-for-fake-audio-capture="${HARDENED_FAKE_AUDIO_FILE}")
@@ -164,7 +185,7 @@ export CHROME_DEVEL_SANDBOX="${sandbox_helper}"
 echo "Starting headless Hardened Chromium automation profile:"
 echo "  Profile: ${automation_profile}"
 echo "  Profile directory: ${profile_directory}"
-echo "  Backend: private loopback CDP (automatic port)"
+echo "  Backend: private loopback CDP (${remote_debugging_address}:${remote_debugging_port})"
 echo "  WM_CLASS: ${wm_class}"
 echo "  Media mode: ${media_mode}"
 echo "  Camera default: ${camera_source} (${media_mode} backend)"

@@ -196,6 +196,40 @@ class BrokerOwnershipTest(unittest.TestCase):
         broker.save_schema(request, "app-b")
 
 
+class WebsiteViewBrokerTest(unittest.TestCase):
+
+  def test_profile_document_preserves_expert_values_and_reports_warnings(self) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+      rules_path = Path(directory) / "HardenedWebsiteView.json"
+      broker = Broker(BrokerConfig(
+          cdp_endpoint="http://127.0.0.1:1",
+          output_root=Path(directory) / "output",
+          token="test",
+          website_view_file=rules_path,
+          start_scheduler=False))
+      saved = broker.save_website_view({
+          "default": {
+              "cameraSource": "fake",
+              "microphoneSource": "fake",
+              "locationSource": "fake",
+              "persona": {"futurePersonaField": "retained"},
+              "exposures": {"webgl": "future-mode"},
+          },
+          "rules": [{
+              "origin": "https://example.test",
+              "cameraSource": "real",
+          }],
+      })
+
+      self.assertEqual("retained",
+                       saved["default"]["persona"]["futurePersonaField"])
+      self.assertEqual("future-mode", saved["default"]["exposures"]["webgl"])
+      self.assertEqual("real", saved["rules"][0]["cameraSource"])
+      warnings = broker.get_website_view_warnings()
+      self.assertTrue(any("webgl=" in warning
+                          for warning in warnings["default"]))
+
+
 class SharedBrowserTargetTest(unittest.TestCase):
 
   def test_jobs_create_tabs_on_the_same_backend_endpoint(self) -> None:

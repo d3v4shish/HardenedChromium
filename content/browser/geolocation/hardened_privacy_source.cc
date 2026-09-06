@@ -128,8 +128,13 @@ class PrivacyRuleCache {
     } else if (now >= refresh_after_) {
       StartReloadLocked();
     }
-    const auto found =
-        values_.find(origin.Serialize() + "\n" + std::string(key));
+    auto found = values_.find(origin.Serialize() + "\n" + std::string(key));
+    if (found == values_.end()) {
+      // Website View defaults are profile-wide but exceptions remain exact
+      // origins. The empty-origin key prevents a subdomain from inheriting an
+      // unrelated site's rule.
+      found = values_.find("\n" + std::string(key));
+    }
     return {found == values_.end() ? std::nullopt
                                    : std::optional(found->second),
             rules_path == loaded_path_};
@@ -161,9 +166,20 @@ class PrivacyRuleCache {
     }
     const std::optional<base::Value> value =
         base::JSONReader::Read(json, base::JSON_PARSE_RFC);
-    const base::ListValue* rules = value && value->is_dict()
-                                       ? value->GetDict().FindList("rules")
-                                       : nullptr;
+    if (!value || !value->is_dict()) {
+      return values;
+    }
+    const auto& document = value->GetDict();
+    if (const base::DictValue* defaults = document.FindDict("default")) {
+      for (std::string_view source_key :
+           {"locationSource", "cameraSource", "microphoneSource"}) {
+        const std::string* source = defaults->FindString(source_key);
+        if (source && (*source == "real" || *source == "fake")) {
+          values["\n" + std::string(source_key)] = *source;
+        }
+      }
+    }
+    const base::ListValue* rules = document.FindList("rules");
     if (!rules) {
       return values;
     }

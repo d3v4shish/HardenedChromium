@@ -5,6 +5,7 @@
 | Feature | User-facing behavior | Main implementation area |
 | --- | --- | --- |
 | Privacy sources | Real/private camera, microphone, and location selectors | content, media, permission UI |
+| Website View | Profile baseline plus exact-origin website-visible policy | Settings, profile JSON, content, Blink |
 | Browser roles | Blue shared-app boundary; red isolated-private boundary | browser views and frame code |
 | Shared backend | One visible default-profile Chromium; broker opens tabs | launcher, service, broker |
 | Application API | REST jobs plus replayable WebSocket/SSE events | `hardened_scrape_broker.py` |
@@ -22,6 +23,30 @@ derives output feeds in a short-lived child process. A user makes a website
 feed-capable by creating a feed/job or saving an extraction schema in the
 broker UI/API; no separate RSS process runs inside every Chromium instance.
 
+## Website View
+
+`chrome://settings/privacy` contains a **Website view** editor backed by
+`HardenedWebsiteView.json` in the active profile. It has one profile baseline
+and exact HTTP(S)-origin rules: `https://example.test` does not apply to a
+subdomain, a different port, or an embedded third party. The default baseline
+uses fake camera, microphone, and location sources.
+
+The document intentionally retains arbitrary expert fields. The broker's
+`GET /service/website-view` endpoint returns warnings for values the current
+browser build does not implement; it never rewrites them into a different
+identity. The browser currently enforces these parts:
+
+- default and exact-origin camera, microphone, and location sources;
+- `navigator.webdriver` as `hide` or `report`, selected at browser start; and
+- a non-zero, loopback-only CDP port (`9222` by default), avoiding the
+  automation marker associated with Chromium's port-zero launch.
+
+Persona, canvas, WebGL, audio, WebRTC, font, client-hint, and related exposure
+keys are persisted now as the stable configuration contract, but are warnings
+until their matching engine hooks are implemented. Do not treat an unimplemented
+key as a privacy guarantee. Reload websites after source-policy changes;
+restart Chromium after changing the automation mode or CDP launch settings.
+
 ## Required release checks
 
 Run these before publishing a build or port:
@@ -31,6 +56,7 @@ git diff --check
 third_party/ninja/ninja -C out/Hardened chrome
 cd tools/hardened_chromium
 python3 -m unittest hardened_scrape_broker_test.py hardened_scrape_service_test.py \
+  hardened_website_view_test.py \
   hardened_scrape_security_test.py hardened_scrape_performance_test.py \
   hardened_scrape_stream_test.py hardened_scrape_install_test.py
 python3 benchmark_stream_transport.py --sockets 32 --events-per-second 1000 \

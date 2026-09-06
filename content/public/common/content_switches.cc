@@ -39,6 +39,9 @@ const char kHardenedFakeLocation[] = "hardened-fake-location";
 const char kHardenedDefaultLocationSource[] =
     "hardened-default-location-source";
 const char kHardenedPrivacyRulesFile[] = "hardened-privacy-rules-file";
+// Controls the page-visible navigator.webdriver value. Valid values are
+// "hide" and "report"; unrecognised values retain Chromium's behavior.
+const char kHardenedWebDriverMode[] = "hardened-webdriver-mode";
 
 // Causes the browser process to crash on startup.
 const char kBrowserCrashTest[]              = "crash-test";

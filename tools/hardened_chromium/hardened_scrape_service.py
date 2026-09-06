@@ -32,10 +32,15 @@ from urllib.parse import urlparse
 import urllib.error
 import urllib.request
 
+from hardened_website_view import load_document as load_website_view
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SOURCE_DIR = SCRIPT_DIR.parent.parent
-DEFAULT_CDP_ENDPOINT = "auto"
+# A zero remote-debugging port enables Chromium's AutomationControlled runtime
+# feature. Keep the private endpoint non-zero by default and never choose zero
+# as a recovery fallback.
+DEFAULT_CDP_ENDPOINT = "http://127.0.0.1:9222"
 DEFAULT_BROKER_URL = "http://127.0.0.1:8877"
 SERVICE_BACKEND_ID = "hardened-chromium-broker"
 SERVICE_PROTOCOL_VERSION = 1
@@ -150,6 +155,10 @@ class ServiceConfig:
   @property
   def location_settings_file(self) -> Path:
     return self.broker_state_dir / "browser_location_settings.json"
+
+  @property
+  def website_view_file(self) -> Path:
+    return self.profile / "HardenedWebsiteView.json"
 
 
 class ServiceLock:
@@ -443,24 +452,20 @@ def http_json(
 
 
 def discover_cdp_endpoint(config: ServiceConfig) -> str:
-  """Resolve Chromium's private ephemeral DevTools endpoint."""
+  """Resolve the private, non-zero DevTools endpoint.
+
+  ``auto`` is retained as a compatibility spelling for the fixed hardened
+  default; it no longer requests Chromium's automation-signalling port zero.
+  """
   if config.cdp_endpoint != "auto":
     return config.cdp_endpoint
-  active_port_file = config.profile / "DevToolsActivePort"
-  try:
-    lines = active_port_file.read_text(encoding="utf-8").splitlines()
-    port = int(lines[0].strip())
-  except (OSError, ValueError, IndexError):
-    return ""
-  if not 1 <= port <= 65535:
-    return ""
-  return f"http://127.0.0.1:{port}"
+  return DEFAULT_CDP_ENDPOINT
 
 
 def cdp_probe(config: ServiceConfig) -> HttpProbe:
   endpoint = discover_cdp_endpoint(config)
   if not endpoint:
-    return HttpProbe(False, error="DevToolsActivePort is not available")
+    return HttpProbe(False, error="private CDP endpoint is not available")
   return http_json(endpoint + "/json/version", timeout=2)
 
 
@@ -609,7 +614,7 @@ def start_browser(config: ServiceConfig) -> int:
   env = os.environ.copy()
   if config.cdp_endpoint == "auto":
     env["HARDENED_REMOTE_DEBUGGING_ADDRESS"] = "127.0.0.1"
-    env["HARDENED_REMOTE_DEBUGGING_PORT"] = "0"
+    env["HARDENED_REMOTE_DEBUGGING_PORT"] = "9222"
   else:
     host, port = endpoint_host_port(config.cdp_endpoint, 80)
     env["HARDENED_REMOTE_DEBUGGING_ADDRESS"] = host
@@ -631,8 +636,11 @@ def start_browser(config: ServiceConfig) -> int:
       location_settings["longitude"])
   env["HARDENED_FAKE_LOCATION_ACCURACY"] = str(
       location_settings["accuracy"])
-  env["HARDENED_PRIVACY_RULES_FILE"] = str(
-      config.broker_state_dir / "browser_privacy_rules.json")
+  env["HARDENED_PRIVACY_RULES_FILE"] = str(config.website_view_file)
+  env["HARDENED_WEBSITE_VIEW_FILE"] = str(config.website_view_file)
+  website_view = load_website_view(config.website_view_file)
+  env["HARDENED_WEBDRIVER_MODE"] = str(
+      website_view["default"]["exposures"].get("automation", "hide"))
   config.browser_log.parent.mkdir(parents=True, exist_ok=True)
   append_lifecycle_event(
       config, "browser_starting", cdpMode=config.cdp_endpoint,
@@ -700,6 +708,8 @@ def broker_command(
       host,
       "--port",
       str(port),
+      "--website-view-file",
+      str(config.website_view_file),
   ]
   if config.no_auth:
     command.append("--no-auth")
@@ -762,8 +772,8 @@ def ensure_service(config: ServiceConfig) -> dict[str, Any]:
           startup_pid=browser_pid)
       append_lifecycle_event(config, "browser_ready")
 
-    # The browser uses an ephemeral port. If it was recreated, an existing
-    # owned broker necessarily points at the previous browser instance.
+    # A recreated browser may have a new CDP target even when its configured
+    # fixed port is unchanged, so an existing broker must reconnect.
     if browser_started and broker.ok:
       broker_pid = read_pid(config.broker_pid_file)
       stopped = terminate_owned_pid(
