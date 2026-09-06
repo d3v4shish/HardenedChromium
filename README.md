@@ -23,6 +23,17 @@ revision is supported through the porting workflow in
 - feed generation in a separate process, plus performance and correctness
   gates.
 
+## Technical article series
+
+For an implementation-level explanation of Chromium's architecture, the
+website-visible signals changed by this fork, the exact hook points, and the
+remaining detection limits, read:
+
+1. [Where a Website Meets Chromium](ARTICLE_1_CHROMIUM_ARCHITECTURE.md)
+2. [Changing What a Website Can Observe](ARTICLE_2_WEBSITE_VISIBLE_STATE.md)
+3. [Protecting User Actions and Physical Devices](ARTICLE_3_USER_INPUT_MEDIA_PRIVACY.md)
+4. [Website View, Automation Signals, and the Shared Browser](ARTICLE_4_AUTOMATION_POLICY_BROKER.md)
+
 ## Read this first
 
 1. [Build and apply the overlay](docs/hardened_chromium/BUILDING.md)
