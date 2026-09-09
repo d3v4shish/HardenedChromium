@@ -1,0 +1,12 @@
+{
+  "id": "facebook-default",
+  "name": "Facebook rendered posts",
+  "itemRoot": "[role=\"main\"] [role=\"article\"], [role=\"feed\"] [role=\"article\"]",
+  "includeHidden": false,
+  "fields": [
+    {"name": "author", "selector": "h2, h3, h4, strong a, [data-ad-rendering-role=\"profile_name\"]", "mode": "text"},
+    {"name": "text", "selector": "[data-ad-preview=\"message\"], [data-ad-comet-preview=\"message\"], [dir=\"auto\"]", "mode": "text"},
+    {"name": "time", "selector": "a[aria-label] span, abbr, time", "mode": "text"},
+    {"name": "permalink", "selector": "a[href*=\"/posts/\"], a[href*=\"story_fbid\"], a[href*=\"/permalink/\"]", "mode": "href"}
+  ]
+}

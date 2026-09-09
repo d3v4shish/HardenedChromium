@@ -16,12 +16,35 @@ import("//build/toolchain/toolchain.gni")
 import("//build_overrides/build.gni")
 
 declare_args() {
+  # Selects the Hardened Chromium product contract. Privacy builds compile
+  # remote debugging entry points to a disabled result. Automation builds
+  # retain the broker-facing CDP transport. This is intentionally a build-time
+  # choice so a command-line flag cannot turn a privacy binary into an
+  # automation binary.
+  hardened_chromium_variant = "privacy"
+
   # Hardened Chromium keeps the normal portable x86-64 baseline unless a
   # separately named, host-specific performance build opts into Zen 4 code
   # generation.  Do not use "native" here: explicit tuning keeps build output
   # reproducible and lets launchers reject incompatible CPUs before execution.
   hardened_chromium_cpu_tuning = "portable"
 }
+
+assert(hardened_chromium_variant == "privacy" ||
+           hardened_chromium_variant == "automation",
+       "hardened_chromium_variant must be privacy or automation")
+
+if (hardened_chromium_variant == "automation") {
+  # This file is supplied only by the ordered Automation overlay. Without the
+  # sentinel, a Privacy-only source tree could select the CDP-enabled compile
+  # branch even though its second patch bundle had not been applied.
+  import("//build/config/hardened_chromium/automation.gni")
+  assert(hardened_chromium_automation_patch_present,
+         "the Automation overlay must be applied before building this variant")
+}
+
+hardened_chromium_is_privacy = hardened_chromium_variant == "privacy"
+hardened_chromium_is_automation = hardened_chromium_variant == "automation"
 
 assert(hardened_chromium_cpu_tuning == "portable" ||
            hardened_chromium_cpu_tuning == "znver4",

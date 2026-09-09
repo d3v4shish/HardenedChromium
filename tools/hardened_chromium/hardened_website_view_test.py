@@ -10,9 +10,11 @@ from pathlib import Path
 from hardened_website_view import (
     DEFAULT_DOCUMENT,
     atomic_write_document,
+    enforcement_metadata,
     load_document,
     resolve_policy,
     upsert_rule,
+    validate_document_for_save,
     warnings_for_policy,
 )
 
@@ -67,11 +69,33 @@ class HardenedWebsiteViewTest(unittest.TestCase):
     self.assertTrue(any("webgl=" in warning
                         for warning in warnings_for_policy(resolved)))
 
+  def test_url_rule_is_canonicalized_without_broadening(self) -> None:
+    document = upsert_rule(DEFAULT_DOCUMENT, {
+        "origin": "https://Example.test:443/path?query=value#fragment",
+    })
+    self.assertEqual("https://example.test", document["rules"][0]["origin"])
+    self.assertEqual("fake", resolve_policy(
+        document, "https://sub.example.test/path")["cameraSource"])
+
   def test_invalid_origins_never_create_broad_rules(self) -> None:
     with self.assertRaises(ValueError):
-      upsert_rule(DEFAULT_DOCUMENT, {"origin": "https://example.test/path"})
-    with self.assertRaises(ValueError):
       upsert_rule(DEFAULT_DOCUMENT, {"origin": "file:///tmp/private"})
+    with self.assertRaises(ValueError):
+      upsert_rule(DEFAULT_DOCUMENT, {"origin": "https://user@example.test/"})
+
+  def test_enforcement_metadata_does_not_claim_future_fields_apply(self) -> None:
+    metadata = enforcement_metadata()
+    self.assertIn("cameraSource", metadata["enforced"]["default"])
+    self.assertIn("persona", metadata["retainedOnly"])
+    self.assertIn("rules[].exposures.automation", metadata["retainedOnly"])
+
+  def test_save_validation_rejects_invalid_enforced_values(self) -> None:
+    invalid = {
+        "default": {"cameraSource": "camera-is-not-a-mode"},
+        "rules": [],
+    }
+    with self.assertRaisesRegex(ValueError, "cameraSource"):
+      validate_document_for_save(invalid)
 
 
 if __name__ == "__main__":

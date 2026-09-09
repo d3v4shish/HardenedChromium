@@ -29,7 +29,6 @@ import io
 import json
 import os
 from pathlib import Path
-import queue
 import secrets
 import socket
 import struct
@@ -44,13 +43,23 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 import urllib.error
 import urllib.request
 
+from hardened_adapter_pack import (
+    DEFAULT_PACK_DIR,
+    Adapter,
+    AdapterPack,
+    load_adapter_pack,
+    validate_crawl_request,
+)
 from hardened_website_view import (
     SCHEMA_VERSION as WEBSITE_VIEW_SCHEMA_VERSION,
     atomic_write_document as write_website_view,
+    enforcement_metadata as website_view_enforcement_metadata,
     load_document as load_website_view,
     normalize_document as normalize_website_view,
     normalize_origin as normalize_website_view_origin,
     upsert_rule as upsert_website_view_rule,
+    validate_document_for_save as validate_website_view_document,
+    validate_policy_for_save as validate_website_view_policy,
     warnings_for_policy as website_view_warnings,
 )
 
@@ -83,6 +92,8 @@ STREAM_HEARTBEAT_SECONDS = 15.0
 STREAM_REPLAY_EVENTS_PER_JOB = 4096
 STREAM_QUEUE_MAX_MESSAGES = STREAM_REPLAY_EVENTS_PER_JOB + 16
 STREAM_QUEUE_MAX_BYTES = 4 * 1024 * 1024
+EVENT_PERSIST_QUEUE_MAX_MESSAGES = 4096
+EVENT_PERSIST_QUEUE_MAX_BYTES = 16 * 1024 * 1024
 EVENT_PERSIST_BATCH_SIZE = 64
 EVENT_PERSIST_BATCH_SECONDS = 0.010
 BLOCKED_TEXT_MARKERS = (
@@ -418,6 +429,22 @@ COLLECT_ITEMS_JS = r"""
 CUSTOM_COLLECT_ITEMS_JS_TEMPLATE = r"""
 (() => {
   const schema = __SCHEMA_JSON__;
+  const scopeSelector = schema.scopeRoot || '';
+  const scopeRoot = scopeSelector ? document.querySelector(scopeSelector) : document.body;
+  if (scopeSelector && !scopeRoot) {
+    return {
+      href: location.href,
+      title: document.title || '',
+      readyState: document.readyState,
+      scrollY,
+      scrollHeight: 0,
+      viewportHeight: innerHeight,
+      bodyText: '',
+      schema: {id: schema.id || '', name: schema.name || ''},
+      items: [],
+    };
+  }
+  const collectionRoot = scopeRoot || document.documentElement;
   const absoluteUrl = value => {
     try {
       return value ? new URL(String(value), location.href).href : '';
@@ -503,7 +530,12 @@ CUSTOM_COLLECT_ITEMS_JS_TEMPLATE = r"""
 
   const fields = Array.isArray(schema.fields) ? schema.fields : [];
   const rootSelector = schema.itemRoot || 'body';
-  const signature = JSON.stringify({rootSelector, fields, includeHidden: schema.includeHidden});
+  const signature = JSON.stringify({
+    scopeSelector,
+    rootSelector,
+    fields,
+    includeHidden: schema.includeHidden,
+  });
   const stateKey = '__hardenedIncrementalSchemaCollectorV2';
   let state = window[stateKey];
 
@@ -548,16 +580,18 @@ CUSTOM_COLLECT_ITEMS_JS_TEMPLATE = r"""
   };
   const fullScan = collectorState => {
     collectorState.overflow = false;
-    scanTree(collectorState, document.documentElement);
+    scanTree(collectorState, collectorState.collectionRoot);
   };
 
-  if (!state || state.signature !== signature) {
+  if (!state || state.signature !== signature ||
+      state.collectionRoot !== collectionRoot) {
     if (state) {
       state.mutation.disconnect();
       state.intersection.disconnect();
     }
     state = {
       signature,
+      collectionRoot,
       cycles: 0,
       overflow: false,
       pending: new Set(),
@@ -583,7 +617,7 @@ CUSTOM_COLLECT_ITEMS_JS_TEMPLATE = r"""
         }
       }
     });
-    state.mutation.observe(document.documentElement, {
+    state.mutation.observe(collectionRoot, {
       attributes: true,
       characterData: true,
       childList: true,
@@ -640,7 +674,8 @@ CUSTOM_COLLECT_ITEMS_JS_TEMPLATE = r"""
       ...allUrls(element, 'audio source[src]', 'src'),
     ];
     const item = {
-      adapter: 'custom-schema',
+      adapter: schema.adapterId || 'custom-schema',
+      adapterVersion: schema.adapterVersion || '',
       schemaId: schema.id || '',
       schemaName: schema.name || '',
       fields: values,
@@ -665,7 +700,7 @@ CUSTOM_COLLECT_ITEMS_JS_TEMPLATE = r"""
     scrollHeight: document.scrollingElement ? document.scrollingElement.scrollHeight : document.body.scrollHeight,
     viewportHeight: innerHeight,
     bodyText: items.length ? '' :
-        cleanText(document.body ? document.body.innerText : '').slice(0, 5000),
+        cleanText(scopeRoot ? scopeRoot.innerText : '').slice(0, 5000),
     schema: {id: schema.id || '', name: schema.name || ''},
     items,
   };
@@ -838,11 +873,14 @@ SCROLL_JS = r"""
 """
 
 
-def raw_html_js(max_chars: int) -> str:
+def raw_html_js(max_chars: int, root_selector: str = "") -> str:
   return rf"""
 (() => {{
-  let html = '<!doctype html>\n' + document.documentElement.outerHTML;
-  if (!document.querySelector('base[href]')) {{
+  const rootSelector = {json.dumps(root_selector)};
+  const root = rootSelector ? document.querySelector(rootSelector) : document.documentElement;
+  if (!root) return {{href: location.href, title: document.title || '', html: '', truncated: false, length: 0}};
+  let html = rootSelector ? root.outerHTML : '<!doctype html>\n' + root.outerHTML;
+  if (!rootSelector && !document.querySelector('base[href]')) {{
     const escapedBase = location.href
         .replace(/&/g, '&amp;')
         .replace(/"/g, '&quot;')
@@ -861,10 +899,12 @@ def raw_html_js(max_chars: int) -> str:
 """
 
 
-def visible_text_js(max_chars: int) -> str:
+def visible_text_js(max_chars: int, root_selector: str = "") -> str:
   return rf"""
 (() => {{
-  const text = String(document.body ? document.body.innerText || document.body.textContent || '' : '')
+  const rootSelector = {json.dumps(root_selector)};
+  const root = rootSelector ? document.querySelector(rootSelector) : document.body;
+  const text = String(root ? root.innerText || root.textContent || '' : '')
       .replace(/\n{{3,}}/g, '\n\n')
       .trim();
   return {{
@@ -883,6 +923,53 @@ def schema_collect_items_js(schema: dict[str, Any]) -> str:
   return CUSTOM_COLLECT_ITEMS_JS_TEMPLATE.replace(
       "__SCHEMA_JSON__",
       json.dumps(schema, ensure_ascii=False, separators=(",", ":")))
+
+
+def adapter_advance_js(adapter: Adapter | None) -> str:
+  selector = adapter.advance_selector if adapter else ""
+  direction = adapter.advance_direction if adapter else "down"
+  return r"""
+(() => {
+  const selector = __SELECTOR__;
+  const direction = __DIRECTION__;
+  const scroller = (selector && document.querySelector(selector)) ||
+      document.scrollingElement || document.documentElement || document.body;
+  const before = scroller.scrollTop;
+  const distance = Math.max(600, (scroller.clientHeight || innerHeight) * 0.85);
+  scroller.scrollBy({top: direction === 'up' ? -distance : distance, behavior: 'instant'});
+  return {
+    before,
+    after: scroller.scrollTop,
+    scrollHeight: scroller.scrollHeight,
+    viewportHeight: scroller.clientHeight || innerHeight,
+    direction,
+  };
+})()
+""".replace("__SELECTOR__", json.dumps(selector)).replace(
+      "__DIRECTION__", json.dumps(direction))
+
+
+def adapter_target_links_js(adapter: Adapter) -> str:
+  return r"""
+(() => {
+  const selector = __SELECTOR__;
+  const urls = [];
+  const seen = new Set();
+  try {
+    for (const node of document.querySelectorAll(selector)) {
+      const raw = node.getAttribute('href') || node.href || '';
+      let url = '';
+      try { url = new URL(raw, location.href).href; } catch {}
+      if (url && !seen.has(url)) {
+        seen.add(url);
+        urls.push(url);
+      }
+      if (urls.length >= 1000) break;
+    }
+  } catch {}
+  return {urls};
+})()
+""".replace("__SELECTOR__", json.dumps(adapter.account_target_selector))
 
 
 def wait_for_selector_js(selector: str) -> str:
@@ -965,6 +1052,7 @@ class BrokerConfig:
   max_active_jobs: int = 8
   max_active_jobs_per_app: int = 2
   start_scheduler: bool = True
+  adapter_pack_path: Path = DEFAULT_PACK_DIR
 
 
 @dataclasses.dataclass
@@ -1054,20 +1142,31 @@ class StreamTicket:
   expires_at: float
 
 
+@dataclasses.dataclass(frozen=True)
+class StreamMessage:
+  value: dict[str, Any]
+  payload: bytes
+
+
+def encode_stream_message(value: dict[str, Any]) -> bytes:
+  return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
 class StreamSubscription:
   """Bounded event queue for one app-wide WebSocket connection."""
 
   def __init__(self, auth: BrokerAuth):
     self.auth = auth
     self.job_ids: set[str] = set()
-    self.messages: deque[dict[str, Any]] = deque()
+    self.messages: deque[StreamMessage] = deque()
     self.message_bytes = 0
     self.condition = threading.Condition(threading.Lock())
     self.closed = False
     self.close_reason = ""
 
-  def enqueue(self, event: dict[str, Any]) -> bool:
-    encoded_size = len(json.dumps(event, separators=(",", ":")))
+  def enqueue(self, event: dict[str, Any], payload: bytes | None = None) -> bool:
+    payload = payload if payload is not None else encode_stream_message(event)
+    encoded_size = len(payload)
     with self.condition:
       if self.closed or event.get("jobId") not in self.job_ids:
         return False
@@ -1077,13 +1176,14 @@ class StreamSubscription:
         self.close_reason = "slow_consumer"
         self.condition.notify_all()
         return False
-      self.messages.append(event)
+      self.messages.append(StreamMessage(event, payload))
       self.message_bytes += encoded_size
       self.condition.notify()
       return True
 
   def enqueue_control(self, message: dict[str, Any]) -> bool:
-    encoded_size = len(json.dumps(message, separators=(",", ":")))
+    payload = encode_stream_message(message)
+    encoded_size = len(payload)
     with self.condition:
       if self.closed:
         return False
@@ -1093,21 +1193,19 @@ class StreamSubscription:
         self.close_reason = "slow_consumer"
         self.condition.notify_all()
         return False
-      self.messages.append(message)
+      self.messages.append(StreamMessage(message, payload))
       self.message_bytes += encoded_size
       self.condition.notify()
       return True
 
-  def pop(self, timeout: float) -> dict[str, Any] | None:
+  def pop(self, timeout: float) -> StreamMessage | None:
     with self.condition:
       if not self.messages and not self.closed:
         self.condition.wait(timeout=timeout)
       if not self.messages:
         return None
       message = self.messages.popleft()
-      self.message_bytes = max(
-          0, self.message_bytes -
-          len(json.dumps(message, separators=(",", ":"))))
+      self.message_bytes = max(0, self.message_bytes - len(message.payload))
       return message
 
   def close(self, reason: str = "closed") -> None:
@@ -1124,7 +1222,7 @@ class BrokerEventHub:
     self.lock = threading.RLock()
     self.condition = threading.Condition(self.lock)
     self.next_sequences: dict[str, int] = defaultdict(int)
-    self.rings: dict[str, deque[dict[str, Any]]] = defaultdict(
+    self.rings: dict[str, deque[StreamMessage]] = defaultdict(
         lambda: deque(maxlen=STREAM_REPLAY_EVENTS_PER_JOB))
     self.subscriptions: set[StreamSubscription] = set()
 
@@ -1138,7 +1236,7 @@ class BrokerEventHub:
       job: "Job",
       event_type: str,
       data: dict[str, Any] | None = None,
-  ) -> dict[str, Any]:
+  ) -> StreamMessage:
     now = time.time()
     with self.condition:
       sequence = self.next_sequences[job.id] + 1
@@ -1153,14 +1251,15 @@ class BrokerEventHub:
           "sequence": sequence,
           "data": data or {},
       }
-      self.rings[job.id].append(event)
+      message = StreamMessage(event, encode_stream_message(event))
+      self.rings[job.id].append(message)
       subscriptions = list(self.subscriptions)
       for subscription in subscriptions:
         if (subscription.auth.is_admin or
             subscription.auth.app_id == job.app_id):
-          subscription.enqueue(event)
+          subscription.enqueue(event, message.payload)
       self.condition.notify_all()
-    return event
+    return message
 
   def latest_sequence(self, job_id: str) -> int:
     with self.lock:
@@ -1173,18 +1272,18 @@ class BrokerEventHub:
       ring = self.rings.get(job_id)
       if not ring:
         return [], sequence < self.next_sequences.get(job_id, 0)
-      oldest = int(ring[0]["sequence"])
+      oldest = int(ring[0].value["sequence"])
       expired = sequence < oldest - 1
-      latest = int(ring[-1]["sequence"])
+      latest = int(ring[-1].value["sequence"])
       if sequence >= latest:
         return [], expired
       count = latest - max(sequence, oldest - 1)
       if count <= 64:
         # deque supports efficient indexing at either end, so the common
         # one/few-event case does not scan the entire replay ring.
-        return [ring[-offset] for offset in range(count, 0, -1)], expired
-      return [event for event in ring
-              if int(event["sequence"]) > sequence], expired
+        return [ring[-offset].value for offset in range(count, 0, -1)], expired
+      return [message.value for message in ring
+              if int(message.value["sequence"]) > sequence], expired
 
   def wait_after(
       self, job_id: str, sequence: int, timeout: float,
@@ -1224,7 +1323,7 @@ class BrokerEventHub:
       latest_sequence = self.next_sequences.get(job.id, 0)
       expired = (
           after_sequence < latest_sequence if not ring else
-          after_sequence < int(ring[0]["sequence"]) - 1)
+          after_sequence < int(ring[0].value["sequence"]) - 1)
       if expired:
         subscription.enqueue_control({
             "type": "resync_required",
@@ -1233,10 +1332,9 @@ class BrokerEventHub:
             "latestSequence": latest_sequence,
         })
         return
-      replay = [event for event in ring
-                if int(event["sequence"]) > after_sequence]
-      replay_bytes = sum(len(json.dumps(event, separators=(",", ":")))
-                         for event in replay)
+      replay = [message for message in ring
+                if int(message.value["sequence"]) > after_sequence]
+      replay_bytes = sum(len(message.payload) for message in replay)
       with subscription.condition:
         replay_fits = (
             len(subscription.messages) + len(replay) <=
@@ -1252,12 +1350,19 @@ class BrokerEventHub:
             "reason": "replay_exceeds_bounded_queue",
         })
         return
-      for event in replay:
-        subscription.enqueue(event)
+      for message in replay:
+        subscription.enqueue(message.value, message.payload)
 
   def remove_job(self, subscription: StreamSubscription, job_id: str) -> None:
     with subscription.condition:
       subscription.job_ids.discard(job_id)
+
+
+@dataclasses.dataclass(frozen=True)
+class PersistedEvent:
+  job: "Job"
+  line: str
+  byte_size: int
 
 
 class EventPersistenceWriter:
@@ -1266,71 +1371,86 @@ class EventPersistenceWriter:
   def __init__(self, broker: "Broker"):
     self.broker = broker
     # Persistence is deliberately outside the latency-critical publish path.
-    # The stream queues themselves are bounded; this internal writer queue is
-    # lossless so a disk stall cannot make the broker silently drop audit data.
-    self.queue: queue.Queue[tuple["Job", dict[str, Any]] | None] = queue.Queue()
-    self.close_lock = threading.Lock()
+    # It is still bounded: a slow disk backpressures job producers instead of
+    # turning a durable audit log into unbounded broker memory.
+    self.entries: deque[PersistedEvent] = deque()
+    self.entry_bytes = 0
+    self.condition = threading.Condition(threading.Lock())
     self.closed = False
+    self.writing = False
+    self.failure = ""
     self.thread = threading.Thread(
         target=self._run, name="hardened-event-persistence", daemon=True)
     self.thread.start()
 
-  def enqueue(self, job: "Job", event: dict[str, Any]) -> None:
-    with self.close_lock:
+  def enqueue(self, job: "Job", payload: bytes) -> None:
+    line = payload.decode("utf-8") + "\n"
+    entry = PersistedEvent(job, line, len(line.encode("utf-8")))
+    if entry.byte_size > EVENT_PERSIST_QUEUE_MAX_BYTES:
+      raise RuntimeError("event exceeds the durable persistence byte limit")
+    with self.condition:
+      while (not self.closed and not self.failure and
+             (len(self.entries) >= EVENT_PERSIST_QUEUE_MAX_MESSAGES or
+              self.entry_bytes + entry.byte_size > EVENT_PERSIST_QUEUE_MAX_BYTES)):
+        self.condition.wait()
+      if self.failure:
+        raise RuntimeError(f"event persistence failed: {self.failure}")
       if self.closed:
         raise RuntimeError("event persistence writer is closed")
-      self.queue.put_nowait((job, event))
+      self.entries.append(entry)
+      self.entry_bytes += entry.byte_size
+      self.condition.notify_all()
 
   def flush(self) -> None:
-    self.queue.join()
+    with self.condition:
+      while (self.entries or self.writing) and not self.failure:
+        self.condition.wait()
+      if self.failure:
+        raise RuntimeError(f"event persistence failed: {self.failure}")
 
   def close(self) -> None:
-    with self.close_lock:
+    with self.condition:
       if self.closed:
         return
       self.closed = True
-    self.flush()
-    self.queue.put(None)
+      self.condition.notify_all()
     self.thread.join(timeout=5)
 
   def _run(self) -> None:
     while True:
-      entry = self.queue.get()
-      if entry is None:
-        self.queue.task_done()
-        return
-      batch = [entry]
-      stop_after_batch = False
-      deadline = time.monotonic() + EVENT_PERSIST_BATCH_SECONDS
-      while len(batch) < EVENT_PERSIST_BATCH_SIZE:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-          break
-        try:
-          next_entry = self.queue.get(timeout=remaining)
-        except queue.Empty:
-          break
-        if next_entry is None:
-          self.queue.task_done()
-          stop_after_batch = True
-          break
-        batch.append(next_entry)
+      with self.condition:
+        while not self.entries and not self.closed:
+          self.condition.wait()
+        if self.failure or (self.closed and not self.entries):
+          self.condition.notify_all()
+          return
+        batch: list[PersistedEvent] = []
+        deadline = time.monotonic() + EVENT_PERSIST_BATCH_SECONDS
+        while self.entries and len(batch) < EVENT_PERSIST_BATCH_SIZE:
+          entry = self.entries.popleft()
+          self.entry_bytes -= entry.byte_size
+          batch.append(entry)
+          if time.monotonic() >= deadline:
+            break
+        self.writing = True
+        self.condition.notify_all()
       try:
         self._write_batch(batch)
+      except Exception as error:  # pylint: disable=broad-except
+        with self.condition:
+          self.failure = str(error)
       finally:
-        for _ in batch:
-          self.queue.task_done()
-      if stop_after_batch:
-        return
+        with self.condition:
+          self.writing = False
+          self.condition.notify_all()
 
-  def _write_batch(self, batch: list[tuple["Job", dict[str, Any]]]) -> None:
+  def _write_batch(self, batch: list[PersistedEvent]) -> None:
     grouped: dict[Path, list[str]] = defaultdict(list)
-    for job, event in batch:
-      line = json.dumps(event, ensure_ascii=False) + "\n"
-      grouped[job.output_dir / "events.jsonl"].append(line)
-      grouped[self.broker.events_file].append(line)
+    for entry in batch:
+      grouped[entry.job.output_dir / "events.jsonl"].append(entry.line)
+      grouped[self.broker.events_file].append(entry.line)
       grouped[self.broker.events_dir /
-              f"{sanitize_path_part(job.id)}.jsonl"].append(line)
+              f"{sanitize_path_part(entry.job.id)}.jsonl"].append(entry.line)
     with self.broker.state_lock:
       for path, lines in grouped.items():
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1640,6 +1760,8 @@ class Job:
 class Broker:
   def __init__(self, config: BrokerConfig):
     self.config = config
+    self.adapter_pack: AdapterPack = load_adapter_pack(
+        self.config.adapter_pack_path)
     self.jobs: dict[str, Job] = {}
     self.jobs_lock = threading.RLock()
     self.apps: dict[str, AppRegistration] = {}
@@ -1830,12 +1952,17 @@ class Broker:
         },
     }
 
+  def get_website_view_enforcement(self) -> dict[str, Any]:
+    return website_view_enforcement_metadata()
+
   def save_website_view(self, document: dict[str, Any]) -> dict[str, Any]:
+    validate_website_view_document(document)
     with self.state_lock:
       return write_website_view(
           self.privacy_rules_file, normalize_website_view(document))
 
   def save_privacy_rule(self, request: dict[str, Any]) -> dict[str, Any]:
+    validate_website_view_policy(request, require_origin=True)
     origin = normalize_website_view_origin(
         request.get("origin") or request.get("site") or "")
     if not origin:
@@ -2247,14 +2374,15 @@ class Broker:
     # move together. Control requests can emit events concurrently with the
     # collection worker for the same job.
     with job.event_lock:
-      event = self.event_hub.publish(job, event_type, data)
+      message = self.event_hub.publish(job, event_type, data)
+      event = message.value
       with job.lock:
         job.output_dir.mkdir(parents=True, exist_ok=True)
         job_events = job.output_dir / "events.jsonl"
         job.exports["eventsJsonl"] = str(job_events)
         job.updated_at = float(event["timeEpoch"])
         job.event_sequence = int(event["sequence"])
-      self.event_writer.enqueue(job, event)
+      self.event_writer.enqueue(job, message.payload)
 
   def set_job_status(self, job: Job, status: str, reason: str = "") -> None:
     with job.event_lock:
@@ -2275,7 +2403,8 @@ class Broker:
   def create_job(self, request: dict[str, Any], app_id_override: str = "") -> Job:
     url = str(request.get("url", "")).strip()
     parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
+    if (parsed.scheme not in ("http", "https") or parsed.username or
+        parsed.password):
       raise ValueError("url must be http or https")
 
     app_id = sanitize_path_part(
@@ -2283,7 +2412,35 @@ class Broker:
     job_id = make_job_id()
     host = sanitize_path_part(parsed.hostname or "site")
     output_dir = self.config.output_root / host / job_id
+    adapter = self.adapter_pack.resolve(
+        request.get("adapter", request.get(
+            "adapterId", request.get("adapter_id", "auto"))), url)
+    crawl_mode, crawl_targets = validate_crawl_request(request, adapter)
+    for target_url in crawl_targets:
+      target_parsed = urlparse(target_url)
+      if (target_parsed.scheme not in ("http", "https") or
+          target_parsed.username or target_parsed.password):
+        raise ValueError("crawl targets must be http or https URLs")
+      if adapter and self.adapter_pack.for_url(target_url) != adapter:
+        raise ValueError(
+            f"crawl target is outside the {adapter.id} adapter domains")
+    if crawl_mode == "account" and (
+        not adapter or not adapter.account_target_selector):
+      raise ValueError("account crawl requires an adapter with target discovery")
+
     schema = self.resolve_job_schema(request, app_id)
+    if adapter and adapter.id == "whatsapp" and schema is not None:
+      raise ValueError(
+          "WhatsApp uses only the selected-conversation default schema")
+    if schema is None and adapter:
+      schema = validate_schema_request(adapter.schema).summary()
+    if schema is not None and adapter:
+      schema = dict(schema)
+      schema.update({
+          "adapterId": adapter.id,
+          "adapterVersion": adapter.version,
+          "scopeRoot": str(adapter.schema.get("scopeRoot") or ""),
+      })
     config = {
         "max_items": clamp_int(request.get("max_items", request.get("maxItems", 500)), 0, 5000),
         "timeout_seconds": clamp_int(
@@ -2300,6 +2457,17 @@ class Broker:
             100_000, 50_000_000),
         "schema_id": str(schema.get("id") or "") if schema else "",
         "schema": schema,
+        "adapter_id": adapter.id if adapter else "generic",
+        "adapter_version": adapter.version if adapter else "",
+        "adapter_schema_sha256": adapter.schema_sha256 if adapter else "",
+        "adapter_pack_id": self.adapter_pack.id if adapter else "",
+        "adapter_pack_version": self.adapter_pack.version if adapter else "",
+        "crawl_mode": crawl_mode,
+        "crawl_targets": crawl_targets,
+        "account_confirmed": crawl_mode == "account",
+        "advance_selector": adapter.advance_selector if adapter else "",
+        "advance_direction": adapter.advance_direction if adapter else "down",
+        "snapshot_selector": adapter.snapshot_selector if adapter else "",
       }
     job = Job(
         id=job_id,
@@ -2311,6 +2479,13 @@ class Broker:
     with self.jobs_lock:
       self.jobs[job.id] = job
     self.add_event(job, "created", {"url": url, "config": config})
+    self.add_event(job, "adapter_selected", {
+        "adapterId": config["adapter_id"],
+        "adapterVersion": config["adapter_version"],
+        "adapterPackId": config["adapter_pack_id"],
+        "adapterPackVersion": config["adapter_pack_version"],
+        "crawlMode": crawl_mode,
+    })
     # This is persisted by the asynchronous event writer, so accepting an app
     # request remains independent of slow disks or websocket consumers.
     self.add_event(job, "job_accepted", {
@@ -2446,20 +2621,38 @@ class Broker:
       cdp.connect()
       cdp.command("Page.enable")
       cdp.command("Runtime.enable")
-      cdp.command("Page.navigate", {"url": job.url}, timeout=10)
-      self.add_event(job, "navigated", {"url": job.url})
-      self.set_job_status(job, "running")
-      wait_for_document_ready(cdp, min(45, job.config["timeout_seconds"]))
 
       schema = job.config.get("schema")
       collect_expression = (
           schema_collect_items_js(schema)
           if isinstance(schema, dict) else COLLECT_ITEMS_JS)
+      adapter = self.adapter_pack.get(str(job.config.get("adapter_id") or ""))
+      advance_expression = adapter_advance_js(adapter)
+      crawl_mode = str(job.config.get("crawl_mode") or "scope")
+      crawl_urls = (
+          list(job.config.get("crawl_targets") or [])
+          if crawl_mode == "targets" else [job.url])
+      crawl_url_set = set(crawl_urls)
+      crawl_index = 0
+      account_targets_discovered = False
+
+      cdp.command("Page.navigate", {"url": crawl_urls[crawl_index]}, timeout=10)
+      self.add_event(job, "navigated", {
+          "url": crawl_urls[crawl_index],
+          "crawlMode": crawl_mode,
+          "targetIndex": crawl_index,
+          "targetCount": len(crawl_urls),
+      })
+      self.set_job_status(job, "running")
+      wait_for_document_ready(cdp, min(45, job.config["timeout_seconds"]))
+
       if isinstance(schema, dict):
         self.add_event(job, "schema_selected", {
             "schemaId": schema.get("id", ""),
             "name": schema.get("name", ""),
             "itemRoot": schema.get("itemRoot", ""),
+            "adapterId": job.config.get("adapter_id", "generic"),
+            "adapterVersion": job.config.get("adapter_version", ""),
         })
 
       deadline = time.monotonic() + job.config["timeout_seconds"]
@@ -2467,6 +2660,11 @@ class Broker:
       while not job.stop_event.is_set() and time.monotonic() < deadline:
         page_state = evaluate(cdp, collect_expression, timeout=20)
         job.current_url = str(page_state.get("href") or job.current_url or job.url)
+        current_adapter = self.adapter_pack.for_url(job.current_url)
+        if adapter and (
+            not current_adapter or current_adapter.id != adapter.id):
+          raise ValueError(
+              f"navigation left the {adapter.id} adapter domains")
         job.title = str(page_state.get("title") or job.title)
         added = add_items(job, page_state.get("items", []), seen_keys)
 
@@ -2488,11 +2686,25 @@ class Broker:
         else:
           no_progress += 1
 
+        self.add_event(job, "adapter_progress", {
+            "adapterId": job.config.get("adapter_id", "generic"),
+            "adapterVersion": job.config.get("adapter_version", ""),
+            "crawlMode": crawl_mode,
+            "targetIndex": crawl_index,
+            "targetCount": len(crawl_urls),
+            "currentUrl": job.current_url,
+            "added": added,
+            "itemCount": len(job.items),
+            "noProgressCycles": no_progress,
+        })
+
         if added and checkpoint_count >= job.config["checkpoint_items"]:
           if write_outputs(job):
             checkpoint_count = 0
 
-        if should_pause_for_user(job, page_state, no_progress):
+        if should_pause_for_user(
+            job, page_state, no_progress,
+            minimum_cycles=1 if crawl_mode == "current" else 2):
           write_outputs(job, force=True)
           self.persist_jobs()
           self.set_job_status(job, "needs_user", "manual_interaction_required")
@@ -2510,11 +2722,54 @@ class Broker:
           self.set_job_status(job, "completed", "item_limit_reached")
           break
 
-        if no_progress >= job.config["no_progress_limit"]:
-          self.set_job_status(job, "completed", "no_more_items_detected")
+        if crawl_mode == "current":
+          self.set_job_status(job, "completed", "current_rendered_view_collected")
           break
 
-        evaluate(cdp, SCROLL_JS, timeout=10)
+        if no_progress >= job.config["no_progress_limit"]:
+          if crawl_mode == "account" and not account_targets_discovered:
+            account_targets_discovered = True
+            discovered = evaluate(
+                cdp, adapter_target_links_js(adapter), timeout=20)
+            discovered_urls = (
+                discovered.get("urls", []) if isinstance(discovered, dict) else [])
+            for candidate in discovered_urls:
+              candidate_url = clean_url(candidate)
+              candidate_parsed = urlparse(candidate_url)
+              if (candidate_url and
+                  candidate_parsed.scheme in ("http", "https") and
+                  not candidate_parsed.username and
+                  not candidate_parsed.password and
+                  candidate_url not in crawl_url_set and
+                  self.adapter_pack.for_url(candidate_url) == adapter):
+                crawl_urls.append(candidate_url)
+                crawl_url_set.add(candidate_url)
+              if len(crawl_urls) >= 1000:
+                break
+            self.add_event(job, "adapter_targets_discovered", {
+                "adapterId": adapter.id,
+                "targetCount": len(crawl_urls),
+            })
+
+          if crawl_index + 1 < len(crawl_urls):
+            crawl_index += 1
+            next_url = crawl_urls[crawl_index]
+            cdp.command("Page.navigate", {"url": next_url}, timeout=10)
+            self.add_event(job, "navigated", {
+                "url": next_url,
+                "crawlMode": crawl_mode,
+                "targetIndex": crawl_index,
+                "targetCount": len(crawl_urls),
+            })
+            wait_for_document_ready(
+                cdp, min(45, max(1, int(deadline - time.monotonic()))))
+            no_progress = 0
+            continue
+
+          self.set_job_status(job, "completed", "crawl_scope_exhausted")
+          break
+
+        evaluate(cdp, advance_expression, timeout=10)
         sleep_interruptibly(job, job.config["scroll_delay_ms"] / 1000)
 
       if job.stop_event.is_set():
@@ -2525,7 +2780,7 @@ class Broker:
       if job.status in ("completed", "failed", "stopped"):
         job.finished_at = time.time()
       if job.config["raw_snapshots"] and cdp:
-        capture_raw_outputs(job, cdp)
+        capture_raw_outputs(job, cdp, adapter)
       write_outputs(job, force=True)
       self.add_event(job, "outputs_written", {"exports": dict(job.exports)})
       self.persist_jobs()
@@ -2547,6 +2802,10 @@ class Broker:
       self.persist_jobs()
       if cdp:
         cdp.close()
+      # A completed worker must not leave its final audit records racing profile
+      # teardown or an export reader. Terminal status changes flush their own
+      # event, but run_job can emit outputs_written afterwards.
+      self.event_writer.flush()
 
   def stop_job(self, job_id: str) -> Job:
     job = require_job(self, job_id)
@@ -2731,8 +2990,9 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
       return
     if parts == ["health"]:
       app_scope = "" if auth.is_admin else auth.app_id
+      persistence_error = self.broker.event_writer.failure
       self.send_json({
-          "ok": True,
+          "ok": not persistence_error,
           "service": "hardened-scrape-broker",
           "auth": "none" if self.broker.config.no_auth else "token",
           "outputRoot": str(self.broker.config.output_root),
@@ -2741,12 +3001,19 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
               app_scope)),
           "appCount": len(self.broker.list_apps()) if auth.is_admin else None,
           "feedCount": len(self.broker.list_schemas(app_scope)),
+          "eventPersistence": {
+              "healthy": not persistence_error,
+              "error": persistence_error or None,
+          },
           "capacity": {
               "active": self.broker.active_jobs,
               "maximum": self.broker.config.max_active_jobs,
               "perAppMaximum": self.broker.config.max_active_jobs_per_app,
           },
-      })
+      }, HTTPStatus.OK if not persistence_error else HTTPStatus.SERVICE_UNAVAILABLE)
+      return
+    if parts == ["adapters"]:
+      self.send_json({"ok": True, "pack": self.broker.adapter_pack.summary()})
       return
     if parts == ["service", "media-settings"]:
       if not self.require_admin(auth):
@@ -2764,6 +3031,7 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
           "rules": self.broker.get_privacy_rules(),
           "websiteView": self.broker.get_website_view(),
           "websiteViewWarnings": self.broker.get_website_view_warnings(),
+          "websiteViewEnforcement": self.broker.get_website_view_enforcement(),
       })
       return
     if parts == ["service", "website-view"]:
@@ -2773,6 +3041,7 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
           "ok": True,
           "document": self.broker.get_website_view(),
           "warnings": self.broker.get_website_view_warnings(),
+          "enforcement": self.broker.get_website_view_enforcement(),
           "settingsFile": str(self.broker.privacy_rules_file),
       })
       return
@@ -2910,8 +3179,9 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
         document = self.broker.save_website_view(self.read_json_body())
         self.send_json({
             "ok": True,
-            "document": document,
-            "warnings": self.broker.get_website_view_warnings(),
+          "document": document,
+          "warnings": self.broker.get_website_view_warnings(),
+          "enforcement": self.broker.get_website_view_enforcement(),
         })
         return
       if parts == ["service", "location-settings"]:
@@ -3037,14 +3307,18 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
           return
         self.send_json({"ok": True, "deleted": parts[1]})
         return
-      if len(parts) == 3 and parts[:2] == ["service", "privacy-rules"]:
+      if len(parts) >= 3 and parts[:2] == ["service", "privacy-rules"]:
         if not self.require_admin(auth):
           return
-        if not self.broker.delete_privacy_rule(parts[2]):
+        # Rule ids default to origins, whose scheme separator must survive
+        # path splitting ("https://" contains an empty segment).
+        rule_id = unquote(
+            parsed.path.removeprefix("/service/privacy-rules/"))
+        if not self.broker.delete_privacy_rule(rule_id):
           self.send_json({"ok": False, "error": "privacy rule not found"},
                          HTTPStatus.NOT_FOUND)
           return
-        self.send_json({"ok": True, "deleted": parts[2]})
+        self.send_json({"ok": True, "deleted": rule_id})
         return
       self.send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
     except ValueError as error:
@@ -3302,8 +3576,8 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
     send_lock = threading.Lock()
     writer_stopped = threading.Event()
 
-    def send_json_message(value: dict[str, Any]) -> None:
-      payload = json.dumps(value, separators=(",", ":")).encode("utf-8")
+    def send_json_message(value: dict[str, Any] | bytes) -> None:
+      payload = value if isinstance(value, bytes) else encode_stream_message(value)
       with send_lock:
         send_websocket_frame(self.connection, payload)
 
@@ -3317,7 +3591,7 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
         while not subscription.closed:
           message = subscription.pop(STREAM_HEARTBEAT_SECONDS)
           if message is not None:
-            send_json_message(message)
+            send_json_message(message.payload)
             continue
           if subscription.closed:
             break
@@ -3474,6 +3748,7 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
             "POST /service/privacy-rules",
             "DELETE /service/privacy-rules/<rule_id>",
             "POST /service/restart",
+            "GET /adapters",
             "GET /schemas",
             "POST /schemas",
             "GET /schemas/<schema_id>",
@@ -6705,6 +6980,8 @@ def normalize_item(raw: dict[str, Any], job: Job, index: int) -> dict[str, Any]:
   links = clean_url_list(raw.get("links", []), 80)
   media_urls = clean_url_list(raw.get("media", raw.get("media_urls", [])), 80)
   adapter = limit_text(raw.get("adapter", "generic"), 80) or "generic"
+  adapter_version = limit_text(
+      raw.get("adapterVersion", job.config.get("adapter_version", "")), 80)
   key = limit_text(raw.get("key") or permalink or
                    f"{adapter}:{author}:{time_text}:{text[:600]}", 1200)
   fields = clean_item_fields(raw.get("fields", {}), 20000)
@@ -6718,6 +6995,11 @@ def normalize_item(raw: dict[str, Any], job: Job, index: int) -> dict[str, Any]:
       "index": index,
       "key": key,
       "adapter": adapter,
+      "adapter_version": adapter_version,
+      "adapter_pack_id": str(job.config.get("adapter_pack_id") or ""),
+      "adapter_pack_version": str(
+          job.config.get("adapter_pack_version") or ""),
+      "crawl_mode": str(job.config.get("crawl_mode") or "scope"),
       "captured_at": iso_time(time.time()),
       "author": author,
       "time_text": time_text,
@@ -6739,10 +7021,16 @@ def normalize_item(raw: dict[str, Any], job: Job, index: int) -> dict[str, Any]:
   return item
 
 
-def should_pause_for_user(job: Job, page_state: dict[str, Any], no_progress: int) -> bool:
+def should_pause_for_user(
+    job: Job,
+    page_state: dict[str, Any],
+    no_progress: int,
+    *,
+    minimum_cycles: int = 2,
+) -> bool:
   if len(job.items) > 0:
     return False
-  if no_progress < 2:
+  if no_progress < minimum_cycles:
     return False
   body_text = str(page_state.get("bodyText", "")).lower()
   return any(marker in body_text for marker in BLOCKED_TEXT_MARKERS)
@@ -6754,28 +7042,72 @@ def sleep_interruptibly(job: Job, seconds: float) -> None:
     time.sleep(min(0.2, max(0, deadline - time.monotonic())))
 
 
-def capture_raw_outputs(job: Job, cdp: CdpWebSocket) -> None:
-  raw = evaluate(cdp, raw_html_js(job.config["max_raw_html_chars"]), timeout=30)
+def validate_adapter_capture_url(url: object, adapter: Adapter | None) -> str:
+  captured_url = str(url or "").strip()
+  if not adapter:
+    return captured_url
+  parsed = urlparse(captured_url)
+  host = (parsed.hostname or "").lower().rstrip(".")
+  if (parsed.scheme not in ("http", "https") or parsed.username or
+      parsed.password or not any(
+          host == domain or host.endswith(f".{domain}")
+          for domain in adapter.domains)):
+    raise ValueError(
+        f"snapshot navigation left the {adapter.id} adapter domains")
+  return captured_url
+
+
+def capture_raw_outputs(
+    job: Job,
+    cdp: CdpWebSocket,
+    adapter: Adapter | None = None,
+) -> None:
+  root_selector = str(job.config.get("snapshot_selector") or "")
+  raw = evaluate(
+      cdp, raw_html_js(job.config["max_raw_html_chars"], root_selector),
+      timeout=30)
   if isinstance(raw, dict):
-    job.current_url = str(raw.get("href") or job.current_url)
+    job.current_url = validate_adapter_capture_url(
+        raw.get("href") or job.current_url, adapter)
     job.title = str(raw.get("title") or job.title)
     raw_html = str(raw.get("html") or "")
     job.raw_html_truncated = bool(raw.get("truncated"))
     job.raw_html_length = int(raw.get("length") or len(raw_html))
     write_text_file(job, "rawHtml", "raw.html", raw_html)
+  elif adapter:
+    raise ValueError(
+        f"could not verify the {adapter.id} adapter snapshot URL")
+  if root_selector:
+    job.exports["snapshotMhtmlOmitted"] = (
+        "adapter scope forbids full-document capture")
+  else:
+    try:
+      snapshot = cdp.command(
+          "Page.captureSnapshot", {"format": "mhtml"}, timeout=45)
+    except Exception as error:
+      job.exports["snapshotMhtmlError"] = str(error)
+    else:
+      data = str(snapshot.get("data") or "")
+      if data:
+        if adapter:
+          location = evaluate(
+              cdp, "(() => ({href: location.href}))()", timeout=10)
+          validate_adapter_capture_url(
+              location.get("href") if isinstance(location, dict) else "",
+              adapter)
+        write_text_file(job, "snapshotMhtml", "snapshot.mhtml", data)
   try:
-    snapshot = cdp.command("Page.captureSnapshot", {"format": "mhtml"}, timeout=45)
-    data = str(snapshot.get("data") or "")
-    if data:
-      write_text_file(job, "snapshotMhtml", "snapshot.mhtml", data)
-  except Exception as error:
-    job.exports["snapshotMhtmlError"] = str(error)
-  try:
-    visible = evaluate(cdp, visible_text_js(job.config["max_raw_html_chars"]), timeout=30)
-    if isinstance(visible, dict):
-      write_text_file(job, "visibleText", "visible_text.txt", str(visible.get("text") or ""))
+    visible = evaluate(
+        cdp, visible_text_js(job.config["max_raw_html_chars"], root_selector),
+        timeout=30)
   except Exception as error:
     job.exports["visibleTextError"] = str(error)
+    return
+  if isinstance(visible, dict):
+    validate_adapter_capture_url(
+        visible.get("href") or job.current_url, adapter)
+    write_text_file(
+        job, "visibleText", "visible_text.txt", str(visible.get("text") or ""))
 
 
 def write_outputs(job: Job, *, force: bool = False) -> bool:
@@ -7055,6 +7387,10 @@ def build_items_csv(items: list[dict[str, Any]]) -> str:
       "index",
       "captured_at",
       "adapter",
+      "adapter_version",
+      "adapter_pack_id",
+      "adapter_pack_version",
+      "crawl_mode",
       "schema_id",
       "author",
       "time_text",
@@ -7071,6 +7407,10 @@ def build_items_csv(items: list[dict[str, Any]]) -> str:
         "index": item.get("index", ""),
         "captured_at": item.get("captured_at", ""),
         "adapter": item.get("adapter", ""),
+        "adapter_version": item.get("adapter_version", ""),
+        "adapter_pack_id": item.get("adapter_pack_id", ""),
+        "adapter_pack_version": item.get("adapter_pack_version", ""),
+        "crawl_mode": item.get("crawl_mode", ""),
         "schema_id": item.get("schema_id", ""),
         "author": item.get("author", ""),
         "time_text": item.get("time_text", ""),
@@ -7643,6 +7983,11 @@ def parse_args() -> argparse.Namespace:
       default=Path(os.environ["HARDENED_WEBSITE_VIEW_FILE"])
       if os.environ.get("HARDENED_WEBSITE_VIEW_FILE") else None,
       help="Profile-scoped Website View policy document.")
+  parser.add_argument(
+      "--adapter-pack", type=Path,
+      default=Path(os.environ.get(
+          "HARDENED_ADAPTER_PACK", str(DEFAULT_PACK_DIR))),
+      help="Local checksum-verified adapter pack directory.")
   parser.add_argument("--host", default="127.0.0.1")
   parser.add_argument("--port", type=int, default=DEFAULT_PORT)
   parser.add_argument("--token", default="",
@@ -7698,6 +8043,7 @@ def main() -> int:
       no_auth=args.no_auth,
       max_active_jobs=args.max_active_jobs,
       max_active_jobs_per_app=args.max_active_jobs_per_app,
+      adapter_pack_path=args.adapter_pack.expanduser().resolve(),
   )
   broker = Broker(config)
   server = ThreadingHTTPServer((args.host, args.port), BrokerRequestHandler)

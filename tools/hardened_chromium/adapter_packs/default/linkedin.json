@@ -1,0 +1,12 @@
+{
+  "id": "linkedin-default",
+  "name": "LinkedIn rendered updates",
+  "itemRoot": ".feed-shared-update-v2, [data-urn*=\"activity\"], [class*=\"feed-shared-update\"], .reusable-search__result-container",
+  "includeHidden": false,
+  "fields": [
+    {"name": "author", "selector": ".update-components-actor__title, .feed-shared-actor__title, [class*=\"actor__title\"]", "mode": "text"},
+    {"name": "text", "selector": ".feed-shared-update-v2__description, .update-components-text, [class*=\"update-components-text\"], .entity-result__summary", "mode": "text"},
+    {"name": "time", "selector": "time, [class*=\"actor__sub-description\"]", "mode": "text"},
+    {"name": "permalink", "selector": "a[href*=\"activity\"], a[href*=\"posts\"]", "mode": "href"}
+  ]
+}

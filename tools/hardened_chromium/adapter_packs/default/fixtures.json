@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {"adapter": "x", "view": "current timeline", "url": "https://x.com/home", "crawlMode": "current"},
+    {"adapter": "x", "view": "search", "url": "https://x.com/search?q=chromium", "crawlMode": "scope"},
+    {"adapter": "x", "view": "thread", "url": "https://x.com/example/status/1", "crawlMode": "targets", "targets": ["https://x.com/example/status/1"]},
+    {"adapter": "linkedin", "view": "current feed", "url": "https://www.linkedin.com/feed/", "crawlMode": "scope"},
+    {"adapter": "linkedin", "view": "search", "url": "https://www.linkedin.com/search/results/content/", "crawlMode": "current"},
+    {"adapter": "linkedin", "view": "activity", "url": "https://www.linkedin.com/in/example/recent-activity/all/", "crawlMode": "account", "confirmAccount": true},
+    {"adapter": "facebook", "view": "current feed", "url": "https://www.facebook.com/", "crawlMode": "scope"},
+    {"adapter": "facebook", "view": "group", "url": "https://www.facebook.com/groups/example/", "crawlMode": "current"},
+    {"adapter": "facebook", "view": "profile timeline", "url": "https://www.facebook.com/example/", "crawlMode": "account", "confirmAccount": true},
+    {"adapter": "reddit", "view": "current listing", "url": "https://www.reddit.com/r/chromium/", "crawlMode": "scope"},
+    {"adapter": "reddit", "view": "thread", "url": "https://www.reddit.com/r/chromium/comments/1/thread/", "crawlMode": "targets", "targets": ["https://www.reddit.com/r/chromium/comments/1/thread/"]},
+    {"adapter": "reddit", "view": "rendered comments", "url": "https://www.reddit.com/r/chromium/comments/1/thread/", "crawlMode": "current"},
+    {"adapter": "whatsapp", "view": "currently selected conversation", "url": "https://web.whatsapp.com/", "crawlMode": "current"},
+    {"adapter": "whatsapp", "view": "rendered messages", "url": "https://web.whatsapp.com/", "crawlMode": "scope"}
+  ]
+}

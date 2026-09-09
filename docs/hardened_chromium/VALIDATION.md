@@ -1,13 +1,35 @@
 # Validation and troubleshooting checklist
 
+## Desktop installation
+
+After both product binaries have matching build manifests, validate and install
+their separate desktop identities:
+
+```sh
+bash -n tools/hardened_chromium/install_red_desktop_entry.sh
+bash -n tools/hardened_chromium/install_green_automation_desktop_entry.sh
+PYTHONPATH=tools/hardened_chromium python3 -m unittest \
+  tools/hardened_chromium/hardened_scrape_install_test.py
+tools/hardened_chromium/install_red_desktop_entry.sh
+tools/hardened_chromium/install_green_automation_desktop_entry.sh
+python3 tools/hardened_chromium/install_hardened_chromium_service.py
+hardened-chromium-service capabilities --json
+```
+
+The resulting desktop files must name different applications and WM classes,
+reference the red Privacy and green Automation icons, and pin the matching
+verified binaries. The Automation browser boundary remains blue.
+
 ## Static and build checks
 
 Run these from the Chromium source root after applying the overlay:
 
 ```sh
 git diff --check
-gn gen out/Hardened --args='is_debug=false is_component_build=false dcheck_always_on=true symbol_level=1'
-third_party/ninja/ninja -C out/Hardened chrome
+buildtools/linux64/gn gen out/HardenedPrivacyDev --args='is_debug=false is_component_build=false dcheck_always_on=true symbol_level=1 hardened_chromium_variant="privacy"'
+buildtools/linux64/gn gen out/HardenedAutomationDev --args='is_debug=false is_component_build=false dcheck_always_on=true symbol_level=1 hardened_chromium_variant="automation"'
+third_party/ninja/ninja -C out/HardenedPrivacyDev chrome
+third_party/ninja/ninja -C out/HardenedAutomationDev chrome
 ```
 
 The native build is required after changes to `content`, `media`, `chrome`,
@@ -18,16 +40,13 @@ changes.
 
 ```sh
 cd tools/hardened_chromium
-python3 -m unittest hardened_scrape_broker_test.py \
-  hardened_scrape_service_test.py hardened_website_view_test.py \
-  hardened_scrape_security_test.py \
-  hardened_scrape_performance_test.py hardened_scrape_stream_test.py \
-  hardened_scrape_install_test.py
+PYTHONPATH=. python3 -m unittest discover -p '*_test.py'
 ```
 
 These cover scheduler limits, authorization isolation, event replay, slow
 consumer behavior, stream persistence, installer discovery, service ownership,
-browser recovery, and no-auth/token-mode conflicts.
+browser recovery, product/profile isolation, adapter fixtures and crawl modes,
+patch manifests, and no-auth/token-mode conflicts.
 
 ## Runtime acceptance test
 
@@ -49,15 +68,23 @@ one client in token mode and another in no-auth mode against the same broker.
 
 ## Privacy acceptance test
 
-Use `hardened_mode_test.html` in a named profile and test camera only,
+Use `hardened_mode_test.html` in the Privacy build and test camera only,
 microphone only, both, and location. Verify that changing source selection does
 not bypass the ordinary permission prompt. Save a per-origin fake-source rule,
 restart the browser, and confirm it remains fake from the first request. Also
 open `chrome://settings/privacy`, save a Website View rule for
 `https://example.test`, and confirm it does not affect
-`https://sub.example.test` or an embedded third-party frame. Start through the
-automation launcher, then verify `navigator.webdriver` is `false`; repeat with
+`https://sub.example.test` or an embedded third-party frame. Verify the red
+boundary and confirm port, pipe, and approval-mode CDP requests create no
+listener or `DevToolsActivePort`. Start through the Automation launcher, verify
+the blue boundary, then verify `navigator.webdriver` is `false`; repeat with
 `HARDENED_WEBDRIVER_MODE=report` to confirm the user-visible control works.
+
+Submit offline/controlled fixture jobs for every default adapter and crawl
+mode. Confirm adapter metadata/events, same-domain target validation, explicit
+account confirmation, and bounds. For WhatsApp, inspect every normalized and
+raw artifact and confirm sidebar, contact, status, and other-conversation text
+is absent.
 
 ## Crash triage
 

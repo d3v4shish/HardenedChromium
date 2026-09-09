@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | Privacy sources | Real/private camera, microphone, and location selectors | content, media, permission UI |
 | Website View | Profile baseline plus exact-origin website-visible policy | Settings, profile JSON, content, Blink |
-| Browser roles | Blue shared-app boundary; red isolated-private boundary | browser views and frame code |
+| Browser products | Red Privacy build with remote CDP disabled; blue Automation build with broker CDP | build flags, DevTools server, browser frame code |
 | Shared backend | One visible default-profile Chromium; broker opens tabs | launcher, service, broker |
 | Application API | REST jobs plus replayable WebSocket/SSE events | `hardened_scrape_broker.py` |
 | Feed/output derivation | RSS/Atom/JSON Feed/CSV/HTML/JSON after collection | broker child process |
@@ -29,7 +29,8 @@ broker UI/API; no separate RSS process runs inside every Chromium instance.
 `HardenedWebsiteView.json` in the active profile. It has one profile baseline
 and exact HTTP(S)-origin rules: `https://example.test` does not apply to a
 subdomain, a different port, or an embedded third party. The default baseline
-uses fake camera, microphone, and location sources.
+uses fake camera, microphone, and location sources; a missing or malformed
+document also fails closed to those launcher/default fake sources.
 
 The document intentionally retains arbitrary expert fields. The broker's
 `GET /service/website-view` endpoint returns warnings for values the current
@@ -37,7 +38,8 @@ browser build does not implement; it never rewrites them into a different
 identity. The browser currently enforces these parts:
 
 - default and exact-origin camera, microphone, and location sources;
-- `navigator.webdriver` as `hide` or `report`, selected at browser start; and
+- `navigator.webdriver` as `hide` or `report` in Automation builds, selected
+  at browser start and compiled out of Privacy builds; and
 - a non-zero, loopback-only CDP port (`9222` by default), avoiding the
   automation marker associated with Chromium's port-zero launch.
 
@@ -53,12 +55,11 @@ Run these before publishing a build or port:
 
 ```sh
 git diff --check
-third_party/ninja/ninja -C out/Hardened chrome
+third_party/ninja/ninja -C out/HardenedPrivacyDev chrome
+third_party/ninja/ninja -C out/HardenedAutomationDev chrome
 cd tools/hardened_chromium
-python3 -m unittest hardened_scrape_broker_test.py hardened_scrape_service_test.py \
-  hardened_website_view_test.py \
-  hardened_scrape_security_test.py hardened_scrape_performance_test.py \
-  hardened_scrape_stream_test.py hardened_scrape_install_test.py
+PYTHONPATH=. python3 -m unittest discover -p '*_test.py'
+PYTHONPATH=. python3 benchmark_adapters.py --iterations 20000 --require-gates
 python3 benchmark_stream_transport.py --sockets 32 --events-per-second 1000 \
   --duration-seconds 3 --require-gates
 python3 manual_multi_app_test.py --close-tabs
@@ -70,12 +71,13 @@ than per-app Chromium windows, output parsing, and event streaming.
 
 ## Manual privacy and crash checks
 
-1. Open `tools/hardened_chromium/hardened_mode_test.html` in a named profile.
+1. Open `tools/hardened_chromium/hardened_mode_test.html` in the Privacy build.
 2. Request camera, microphone, and location separately and jointly.
 3. Verify private defaults, real-source selector behavior, and ordinary
    allow/block prompts.
-4. Open a default shared backend through `ensure`; verify the blue boundary.
-5. Open a named private profile; verify the red boundary while privacy is on.
+4. Open a default shared Automation backend through `ensure`; verify the blue boundary.
+5. Open the Privacy binary with `run_privacy.sh`; verify the red boundary and
+   that remote port, pipe, and approval requests create no listener.
 6. Submit a broker job, interact with its visible tab, then run diagnostics.
 7. Confirm no new `FATAL`, `DCHECK failed`, `Received signal`, or app tab-open
    failure entries are present.

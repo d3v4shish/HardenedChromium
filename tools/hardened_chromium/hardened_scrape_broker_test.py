@@ -125,6 +125,12 @@ class BrokerSchedulingTest(unittest.TestCase):
       self.assertIn("tab_opening", [event["type"] for event in events])
       self.assertIn("tab_open_failed", [event["type"] for event in events])
       self.assertEqual("failed", job.status)
+      durable_events = [
+          json.loads(line)
+          for line in (job.output_dir / "events.jsonl").read_text(
+              encoding="utf-8").splitlines()
+      ]
+      self.assertEqual(events, durable_events)
 
   def test_live_scheduler_never_exceeds_global_or_per_app_limits(self) -> None:
     with tempfile.TemporaryDirectory() as directory:

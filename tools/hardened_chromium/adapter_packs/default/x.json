@@ -1,0 +1,12 @@
+{
+  "id": "x-default",
+  "name": "X rendered posts",
+  "itemRoot": "article[data-testid=\"tweet\"]",
+  "includeHidden": false,
+  "fields": [
+    {"name": "author", "selector": "[data-testid=\"User-Name\"]", "mode": "text"},
+    {"name": "text", "selector": "[data-testid=\"tweetText\"]", "mode": "text"},
+    {"name": "time", "selector": "time", "mode": "datetime"},
+    {"name": "permalink", "selector": "a[href*=\"/status/\"]", "mode": "href"}
+  ]
+}

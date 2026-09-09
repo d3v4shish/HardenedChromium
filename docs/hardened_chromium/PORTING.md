@@ -54,9 +54,9 @@ be selected independently.
 
 ### App boundary and lifecycle
 
-Blue backend/red private boundary behavior depends on browser frame/view code.
-Test both a default shared backend and a named private profile after any UI
-refactor. Performance-manager changes must retain their existing test
+Blue Automation/red Privacy boundary behavior depends on the generated product
+build flag and browser frame/view code. Test both compiled variants after any
+UI refactor. Performance-manager changes must retain their existing test
 coverage; they affect discard/freeze semantics.
 
 ### Blink/input changes
@@ -68,12 +68,12 @@ Run the nearby Blink tests named by the changed directories.
 ## Build and test loop
 
 ```sh
-gn gen out/Hardened --args='is_debug=false is_component_build=false dcheck_always_on=true symbol_level=1'
-third_party/ninja/ninja -C out/Hardened chrome
+gn gen out/HardenedPrivacyDev --args='is_debug=false is_component_build=false dcheck_always_on=true symbol_level=1 hardened_chromium_variant="privacy"'
+gn gen out/HardenedAutomationDev --args='is_debug=false is_component_build=false dcheck_always_on=true symbol_level=1 hardened_chromium_variant="automation"'
+third_party/ninja/ninja -C out/HardenedPrivacyDev chrome
+third_party/ninja/ninja -C out/HardenedAutomationDev chrome
 cd tools/hardened_chromium
-python3 -m unittest hardened_scrape_broker_test.py hardened_scrape_service_test.py \
-  hardened_scrape_security_test.py hardened_scrape_performance_test.py \
-  hardened_scrape_stream_test.py hardened_scrape_install_test.py
+PYTHONPATH=. python3 -m unittest discover -p '*_test.py'
 ```
 
 Then run `manual_multi_app_test.py --close-tabs` against a disposable profile,

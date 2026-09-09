@@ -1,9 +1,12 @@
 # Hardened Chromium overlay
 
-This repository is an **overlay**, not a Chromium mirror. It contains every
-file added or changed by Hardened Chromium, but intentionally omits Chromium's
-unchanged upstream files and history. Start with Chromium, then apply this
-overlay to obtain a buildable tree.
+Engineering references: [build and validation](BUILD.md),
+[architecture](ARCHITECTURE.md), [benchmarks](BENCHMARKS.md),
+[hotspots](HOTSPOTS.md), and [current work](TODO.md).
+
+This working tree is a pinned Chromium checkout carrying the Hardened Chromium
+changes. The checked `patches/privacy` and `patches/automation` manifests export
+those changes as ordered, checksummed overlays for another checkout.
 
 The overlay was produced against Chromium revision
 `f77d44b339946cd682d311c6c0bc922c32579fbd` (2026-08-03). A newer Chromium
@@ -12,16 +15,36 @@ revision is supported through the porting workflow in
 
 ## What it adds
 
+- two build-time products: Privacy (red boundary, remote CDP disabled) and
+  Automation (blue boundary, loopback CDP and broker enabled);
 - hardened camera, microphone, and location source selection;
 - a profile-owned Website View document with strict fake-source defaults,
   exact-origin overrides, and an expert Settings editor;
-- clear red/private and blue/app-backend browser boundaries;
+- distinct red Privacy and green Automation desktop icons, with red Privacy
+  and blue Automation browser boundaries;
 - one visible Chromium process shared safely by local applications;
 - a loopback broker with REST, WebSocket, and SSE job APIs;
 - application discovery, installation, authentication, diagnostics, and
   recovery tooling;
 - feed generation in a separate process, plus performance and correctness
   gates.
+
+## Product contracts
+
+| Product | App icon | Boundary | Remote CDP | Broker/adapters | Default profile |
+| --- | --- | --- | --- | --- | --- |
+| Privacy | red | red | compiled to disabled stubs | unavailable | `out/HardenedPrivacyProfile` |
+| Automation | green | blue | loopback, profile verified | available | `out/HardenedAutomationProfile` |
+
+Automation includes a checksum-verified local adapter pack for X, LinkedIn,
+Facebook, Reddit, and WhatsApp Web. Adapters read rendered DOM only. WhatsApp
+is additionally restricted to the conversation panel below `#main`;
+it cannot use target/account modes or capture a full-document MHTML snapshot.
+
+Apply `patches/privacy` first. Apply `patches/automation` only on top of the
+recorded Privacy bundle. Both manifests verify the pinned Chromium revision,
+every source payload, base/output hashes, file modes, and the target's original
+content before modifying it. Symlink destinations are rejected.
 
 ## Technical article series
 
@@ -52,6 +75,19 @@ The detailed protocol and privacy-source references remain in
 ## Support boundary
 
 The broker is loopback-only and applications must use it rather than raw CDP.
-The shared backend profile intentionally shares cookies, sessions, cache,
-extensions, and browser privacy settings with app-created tabs. Use a named
-profile for a private, non-shared browser session.
+Privacy and Automation use separate profiles. Launchers reject the other
+product's profile marker unless `HARDENED_ALLOW_PROFILE_SHARING=1` is set as an
+explicit, auditable override. That override permits sequential reuse only: an
+active profile remains locked to the product process that owns it.
+
+Install both user-local desktop entries after building the matching binaries:
+
+```text
+tools/hardened_chromium/install_red_desktop_entry.sh
+tools/hardened_chromium/install_green_automation_desktop_entry.sh
+python3 tools/hardened_chromium/install_hardened_chromium_service.py
+```
+
+Each entry preserves the verified binary selected at installation. The green
+Automation icon is application identity only; its compiled trust boundary
+remains blue.

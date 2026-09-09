@@ -1,0 +1,12 @@
+{
+  "id": "whatsapp-default",
+  "name": "WhatsApp selected conversation messages",
+  "scopeRoot": "#main [data-testid=\"conversation-panel-messages\"]",
+  "itemRoot": "#main [data-testid=\"msg-container\"], #main .message-in, #main .message-out",
+  "includeHidden": false,
+  "fields": [
+    {"name": "author", "selector": ".copyable-text[data-pre-plain-text]", "mode": "attr:data-pre-plain-text"},
+    {"name": "text", "selector": ".selectable-text, [data-testid=\"msg-text\"]", "mode": "text"},
+    {"name": "time", "selector": "[data-testid=\"msg-meta\"], [data-icon=\"msg-time\"]", "mode": "text"}
+  ]
+}

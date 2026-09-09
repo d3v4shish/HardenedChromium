@@ -10,11 +10,10 @@ location. A selection made in the permission preview is reused by Chromium's
 normal device preference ranking. Location selection is scoped to the current
 primary-page navigation.
 
-The browser-owned content boundary also shows the process role. A private
-browser with hardened privacy enabled has a red boundary. The shared
-application backend has a blue boundary whether privacy sources are real or
-private; blue takes precedence because it warns that broker applications can
-control tabs in that process.
+The browser-owned content boundary shows the compiled product role. Privacy
+builds are always red. Automation builds are always blue whether privacy
+sources are real or private, warning that broker applications can control tabs
+in that process. Runtime switches cannot change either product's boundary.
 
 ## Management UI
 
