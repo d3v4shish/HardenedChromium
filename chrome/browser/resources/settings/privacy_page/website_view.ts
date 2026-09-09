@@ -4,9 +4,11 @@
 
 /**
  * Profile-wide, exact-origin Website View editor. The raw document is exposed
- * deliberately: users can set every supported expert value without a preset
- * silently modifying it. Settings are applied to future navigations; the
- * browser keeps a page's identity stable until it reloads.
+ * deliberately: users can retain expert values without a preset silently
+ * modifying them. Only the supported source fields and default automation
+ * mode are enforced; the UI calls out fields that are retained for future
+ * compatibility. Settings are applied to future navigations; the browser
+ * keeps a page's identity stable until it reloads.
  */
 import 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import 'chrome://resources/cr_elements/cr_input/cr_input.js';

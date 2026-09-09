@@ -1,46 +1,62 @@
-# Shared browser and application broker
+# Product boundaries, shared browser, and application broker
+
+Privacy and Automation are different binaries selected by
+`hardened_chromium_variant`. Privacy always draws a 3 px red boundary and
+compiles remote port, pipe, and approval startup to disabled behavior.
+Automation always draws a 3 px blue boundary and is the only product that can
+host the broker. Internal DevTools remains available in both products.
+Privacy has a red desktop icon and `HardenedChromiumPrivacy` WM class.
+Automation has a green desktop icon and `HardenedChromiumAutomation` WM class;
+green identifies the application while its compiled trust boundary stays blue.
 
 `run_for_automation.sh` owns the default profile at
 `out/HardenedAutomationProfile`. Its first invocation starts one visible
-Chromium process with private loopback DevTools access on an ephemeral port.
+Chromium process with private loopback DevTools access on a non-zero port.
 Broker jobs open as tabs in that shared visible backend process; they do not
 create a Chromium process or top-level window per application.
 The launcher keeps a per-user file lock for the lifetime of the first process,
 so simultaneous launches cannot create competing application backends.
 
-The content boundary communicates the browser role. The app-accessible backend
-has a 3 px blue boundary, including while hardened privacy is active. A named
-private browser has the existing 3 px red boundary when hardened privacy is
-active. Blue therefore means "app controlled," while red means "private user
-browsing." All app tabs share the backend profile, including its website
-sessions, cookies, cache, and privacy settings.
+The content boundary communicates the compiled browser role and cannot change
+because of launch flags. All Automation tabs are blue and share their selected
+profile's sessions, cookies, cache, and privacy settings. Privacy windows are
+red and use `out/HardenedPrivacyProfile` by default.
 
 Applications never receive the DevTools address. They use
 `hardened_scrape_service.py --json ensure` as an idempotent discover-or-start
 operation and submit work to the authenticated loopback broker. The helper
 serializes concurrent callers, reuses a healthy browser and broker, and starts
 each missing process at most once. `status --json` performs the same readiness
-probe without starting anything. Named profiles can be opened with:
+probe without starting anything. Privacy browsing is opened with:
 
 ```sh
-tools/hardened_chromium/run_for_automation.sh --named-profile research
+tools/hardened_chromium/run_privacy.sh
 ```
 
-Named profiles retain the native privacy features but do not expose a browser
-backend and cannot be used by broker applications.
+Named Automation profiles are still blue Automation processes. They can omit
+the shared broker listener, but that does not turn them into Privacy builds.
 
 ## Installing and discovering the app backend
 
-Install the browser desktop entry and the app-discovery command together:
+Install the red Privacy and green Automation desktop entries:
 
 ```sh
 tools/hardened_chromium/install_red_desktop_entry.sh
+tools/hardened_chromium/install_green_automation_desktop_entry.sh
+```
+
+Install the Automation discovery command separately:
+
+```sh
+python3 tools/hardened_chromium/install_hardened_chromium_service.py
 ```
 
 This installs `hardened-chromium-service` in `~/.local/bin`. It is a stable
-user-local wrapper around this Hardened Chromium source/build; it does not
-expose CDP. Third-party apps must discover the backend through the command,
-not by scanning browser processes or loopback ports:
+user-local wrapper around the blue Automation build; it does not disclose CDP.
+The wrapper records the verified Automation binary selected during install,
+preventing a later fallback to the historical generic build.
+Third-party apps must discover the backend through the command, not by scanning
+browser processes or loopback ports:
 
 ```sh
 hardened-chromium-service capabilities --json
@@ -69,8 +85,28 @@ python3 tools/hardened_chromium/install_hardened_chromium_service.py --uninstall
 The default desktop/automation profile is therefore shared: a user-opened
 window and all app-opened tabs belong to the same `HardenedAutomationProfile`
 Chromium process and see the same cookies, logins, cache, extensions, and
-privacy configuration. A private `--named-profile` is intentionally separate
-and is never shared with apps.
+privacy configuration. Privacy has its own default profile and an immutable
+role marker. Cross-product reuse fails unless
+`HARDENED_ALLOW_PROFILE_SHARING=1` is explicitly set. The override permits
+sequential migration or troubleshooting, not concurrent ownership: the first
+launcher holds a product-tagged profile lock until its Chromium process exits.
+
+## Default site adapters
+
+`GET /adapters` describes the verified pack. Jobs choose an adapter
+automatically by URL, or accept an explicit `adapter`. `crawlMode` is `scope`
+by default; `current`, `targets`, and confirmed `account` are available when
+listed by the adapter. X covers timeline/search/thread; LinkedIn covers
+feed/search/activity; Facebook covers feed/group/profile; Reddit covers
+listings, threads, and rendered comments.
+
+WhatsApp Web is deliberately narrower: only the currently selected
+conversation and rendered messages in the conversation panel below `#main` are
+collected. If that panel is absent, collection is empty. The adapter cannot be
+disabled, replaced with a custom schema, switched to targets/account, or used
+for full-document MHTML capture. Its mutation observer and recovery scans are
+also rooted in that conversation panel rather than the full page. Every
+adapter fails closed if navigation leaves its declared domains.
 
 ## Application integration
 
@@ -198,7 +234,7 @@ python3 benchmark_stream_transport.py --sockets 32 \
 ```
 
 It requires lossless delivery with p95 at most 25 ms and p99 at most 75 ms.
-On the 2026-08-26 implementation run it delivered all 3,000 events with
-0.124 ms p95, 0.257 ms p99, and 0.386 ms maximum latency. TCP `NODELAY` is set
-on both ends, streaming fanout precedes asynchronous batched JSONL persistence,
-and each connection has bounded message/byte queues.
+On the 2026-09-09 validation run it delivered all 3,000 events with 0.176 ms
+p95, 0.218 ms p99, and 1.724 ms maximum latency. TCP `NODELAY` is set on both
+ends, streaming fanout precedes asynchronous batched JSONL persistence, and
+each connection has bounded message/byte queues.

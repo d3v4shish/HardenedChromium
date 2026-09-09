@@ -5,7 +5,7 @@ set -euo pipefail
 script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source_directory="$(cd "${script_directory}/../.." && pwd)"
 source "${script_directory}/performance_binary.sh"
-chromium_binary="$(resolve_hardened_chromium_binary "${source_directory}")"
+chromium_binary="$(resolve_hardened_chromium_binary "${source_directory}" automation)"
 named_profile="${HARDENED_CHROMIUM_NAMED_PROFILE:-}"
 if [[ "${1:-}" == "--named-profile" ]]; then
   if [[ $# -lt 2 ]]; then
@@ -43,7 +43,7 @@ print(policy["exposures"].get("automation", "hide"))
   webdriver_mode="${webdriver_mode:-hide}"
 fi
 sandbox_helper="${CHROME_DEVEL_SANDBOX:-/usr/local/sbin/chrome-devel-sandbox}"
-wm_class="${HARDENED_CHROMIUM_WM_CLASS:-HardenedChromium}"
+wm_class="${HARDENED_CHROMIUM_WM_CLASS:-HardenedChromiumAutomation}"
 media_mode="${HARDENED_MEDIA_MODE:-loop}"
 audio_capture_mode="${HARDENED_AUDIO_CAPTURE_MODE:-fake}"
 camera_source="${HARDENED_CAMERA_SOURCE:-}"
@@ -75,6 +75,21 @@ fi
 
 mkdir -p "${automation_profile}"
 chmod 700 "${automation_profile}" 2>/dev/null || true
+
+product_validation_args=(
+  --product automation
+  --binary "${chromium_binary}"
+  --profile "${automation_profile}"
+)
+if [[ "${HARDENED_ALLOW_PROFILE_SHARING:-0}" == "1" ]]; then
+  product_validation_args+=(--allow-profile-sharing)
+fi
+if [[ "${HARDENED_ALLOW_UNVERIFIED_BINARY:-0}" == "1" ]]; then
+  product_validation_args+=(--allow-unverified-binary)
+fi
+python3 "${script_directory}/hardened_product.py" \
+  "${product_validation_args[@]}" >/dev/null
+claim_hardened_profile_process_lock "${automation_profile}" automation
 
 if [[ "${remote_debugging_address}" != "127.0.0.1" &&
       "${remote_debugging_address}" != "::1" &&
@@ -115,15 +130,15 @@ if [[ "${backend_capable}" == "1" ]]; then
     # race before the backend-holding launcher has bound its fixed CDP port.
     backend_ready=0
     for _ in {1..150}; do
-      backend_host_header="${remote_debugging_address}"
-      if [[ "${backend_host_header}" == "::1" ]]; then
-        backend_host_header="[::1]"
-      fi
       if [[ "${remote_debugging_port}" =~ ^[1-9][0-9]*$ ]] &&
-         (exec 8<>"/dev/tcp/${remote_debugging_address}/${remote_debugging_port}" &&
-          printf 'GET /json/version HTTP/1.0\r\nHost: %s\r\n\r\n' "${backend_host_header}" >&8 &&
-          IFS= read -r backend_status <&8 &&
-          [[ "${backend_status}" == *" 200 "* ]]) 2>/dev/null; then
+         PYTHONPATH="${script_directory}" python3 -c '
+from pathlib import Path
+from hardened_scrape_service import profile_cdp_matches
+import sys
+raise SystemExit(not profile_cdp_matches(
+    Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])))
+' "${automation_profile}" "${remote_debugging_address}" \
+          "${remote_debugging_port}" 2>/dev/null; then
         backend_ready=1
         break
       fi
@@ -177,13 +192,13 @@ if [[ "${microphone_source}" != "fake" && "${microphone_source}" != "real" ]]; t
   exit 1
 fi
 
-  extra_flags+=(
-    --hardened-selectable-media-sources
-    --hardened-default-camera-source="${camera_source}"
-    --hardened-default-microphone-source="${microphone_source}"
-    --hardened-private-camera-backend="${media_mode}"
-    --hardened-private-camera-name="${obs_camera_name}"
-  )
+extra_flags+=(
+  --hardened-selectable-media-sources
+  --hardened-default-camera-source="${camera_source}"
+  --hardened-default-microphone-source="${microphone_source}"
+  --hardened-private-camera-backend="${media_mode}"
+  --hardened-private-camera-name="${obs_camera_name}"
+)
 
 extra_flags+=(
   --hardened-default-location-source="${HARDENED_LOCATION_SOURCE:-fake}"
@@ -253,7 +268,7 @@ if [[ "${backend_lock_held}" == "1" ]]; then
 elif [[ "${backend_capable}" == "1" ]]; then
   echo "  Backend: reusing the existing default-profile process"
 else
-  echo "  Backend: disabled for named privacy-only profile ${named_profile}"
+  echo "  Backend: disabled for named automation profile ${named_profile}"
 fi
 echo "  WM_CLASS: ${wm_class}"
 echo "  Media mode: ${media_mode}"
@@ -279,9 +294,11 @@ chromium_command=(
   "$@"
 )
 
-if [[ "${backend_lock_held}" == "1" ]]; then
+if [[ "${backend_lock_held}" == "1" ||
+      "${HARDENED_PROFILE_LOCK_HELD}" == "1" ]]; then
   # Keep this small supervisor alive so the process-wide backend lock cannot
-  # disappear when Chromium closes inherited file descriptors.
+  # disappear, and so the profile product lock remains held if Chromium closes
+  # inherited file descriptors.
   "${chromium_command[@]}" &
   browser_pid=$!
   trap 'kill -TERM "${browser_pid}" 2>/dev/null || true' HUP INT TERM

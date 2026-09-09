@@ -15,6 +15,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
+#include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
@@ -106,6 +107,14 @@ std::u16string SubBrowserName(std::u16string_view prefix,
   return base::StrCat(
       {prefix, l10n_util::GetStringUTF16(IDS_PRODUCT_NAME), suffix});
 }
+
+#if BUILDFLAG(HARDENED_CHROMIUM_IS_AUTOMATION)
+constexpr SkColor kExpectedHardenedModeBorderColor =
+    SkColorSetRGB(0x1A, 0x73, 0xE8);
+#else
+constexpr SkColor kExpectedHardenedModeBorderColor =
+    SkColorSetRGB(0xD9, 0x30, 0x25);
+#endif
 
 }  // namespace
 
@@ -221,7 +230,7 @@ TEST_F(BrowserViewTest, BrowserView) {
   EXPECT_EQ(customize_chrome_action->GetEnabled(), true);
 }
 
-TEST_F(HardenedBrowserViewTest, ShowsRedBorderAroundActiveWebContents) {
+TEST_F(HardenedBrowserViewTest, ShowsCompiledProductBorder) {
   const views::View* border_view =
       browser_view()
           ->GetActiveContentsContainerView()
@@ -230,10 +239,12 @@ TEST_F(HardenedBrowserViewTest, ShowsRedBorderAroundActiveWebContents) {
   const views::Border* border = border_view->GetBorder();
   ASSERT_TRUE(border);
   EXPECT_EQ(border->GetInsets(), gfx::Insets(3));
-  EXPECT_EQ(border->color(), ui::ColorVariant(SkColorSetRGB(0xD9, 0x30, 0x25)));
+  EXPECT_EQ(border->color(),
+            ui::ColorVariant(kExpectedHardenedModeBorderColor));
 }
 
-TEST_F(HardenedAppBackendBrowserViewTest, ShowsBlueBorderWhenPrivacyIsEnabled) {
+TEST_F(HardenedAppBackendBrowserViewTest,
+       RemoteDebuggingSwitchDoesNotChangeCompiledBorder) {
   const views::View* border_view =
       browser_view()
           ->GetActiveContentsContainerView()
@@ -242,11 +253,12 @@ TEST_F(HardenedAppBackendBrowserViewTest, ShowsBlueBorderWhenPrivacyIsEnabled) {
   const views::Border* border = border_view->GetBorder();
   ASSERT_TRUE(border);
   EXPECT_EQ(border->GetInsets(), gfx::Insets(3));
-  EXPECT_EQ(border->color(), ui::ColorVariant(SkColorSetRGB(0x1A, 0x73, 0xE8)));
+  EXPECT_EQ(border->color(),
+            ui::ColorVariant(kExpectedHardenedModeBorderColor));
 }
 
 TEST_F(AppBackendWithoutPrivacyBrowserViewTest,
-       ShowsBlueBorderWhenPrivacyIsDisabled) {
+       FeatureStateDoesNotChangeCompiledBorder) {
   const views::View* border_view =
       browser_view()
           ->GetActiveContentsContainerView()
@@ -255,13 +267,21 @@ TEST_F(AppBackendWithoutPrivacyBrowserViewTest,
   const views::Border* border = border_view->GetBorder();
   ASSERT_TRUE(border);
   EXPECT_EQ(border->GetInsets(), gfx::Insets(3));
-  EXPECT_EQ(border->color(), ui::ColorVariant(SkColorSetRGB(0x1A, 0x73, 0xE8)));
+  EXPECT_EQ(border->color(),
+            ui::ColorVariant(kExpectedHardenedModeBorderColor));
 }
 
-TEST_F(StandardBrowserViewTest, ShowsNoBoundaryWithoutPrivacyOrAppBackend) {
-  EXPECT_FALSE(browser_view()
-                   ->GetActiveContentsContainerView()
-                   ->hardened_mode_border_view_for_testing());
+TEST_F(StandardBrowserViewTest, AlwaysShowsCompiledProductBorder) {
+  const views::View* border_view =
+      browser_view()
+          ->GetActiveContentsContainerView()
+          ->hardened_mode_border_view_for_testing();
+  ASSERT_TRUE(border_view);
+  const views::Border* border = border_view->GetBorder();
+  ASSERT_TRUE(border);
+  EXPECT_EQ(border->GetInsets(), gfx::Insets(3));
+  EXPECT_EQ(border->color(),
+            ui::ColorVariant(kExpectedHardenedModeBorderColor));
 }
 
 #if BUILDFLAG(IS_CHROMEOS)

@@ -82,6 +82,28 @@ class NoAuthRequestHandlerTest(unittest.TestCase):
     self.assertEqual(status, 200)
     self.assertNotIn("Access-Control-Allow-Origin", headers)
 
+  def test_adapters_endpoint_reports_verified_local_pack(self) -> None:
+    status, _headers, body = self.request("GET", "/adapters")
+    self.assertEqual(status, 200)
+    payload = json.loads(body)
+    self.assertTrue(payload["pack"]["local"])
+    self.assertTrue(payload["pack"]["verified"])
+    self.assertEqual(
+        ["x", "linkedin", "facebook", "reddit", "whatsapp"],
+        [adapter["id"] for adapter in payload["pack"]["adapters"]])
+
+  def test_invalid_adapter_request_returns_stable_bad_request(self) -> None:
+    payload = json.dumps({
+        "url": "https://www.reddit.com/r/test/",
+        "adapter": "not-installed",
+    }).encode("utf-8")
+    status, _headers, body = self.request(
+        "POST", "/jobs", {"Content-Type": "application/json"}, payload)
+    self.assertEqual(status, 400)
+    response = json.loads(body)
+    self.assertFalse(response["ok"])
+    self.assertEqual("unknown adapter: not-installed", response["error"])
+
   def test_foreign_origin_is_rejected_without_cors(self) -> None:
     status, headers, body = self.request(
         "GET", "/health", {"Origin": "https://evil.example"})

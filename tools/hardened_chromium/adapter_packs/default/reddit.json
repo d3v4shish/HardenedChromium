@@ -1,0 +1,12 @@
+{
+  "id": "reddit-default",
+  "name": "Reddit rendered posts and comments",
+  "itemRoot": "shreddit-post, shreddit-comment, [data-testid=\"post-container\"], [data-testid=\"comment\"], .Comment",
+  "includeHidden": false,
+  "fields": [
+    {"name": "author", "selector": "[slot=\"authorName\"], a[href*=\"/user/\"], [data-testid=\"comment_author_link\"]", "mode": "text"},
+    {"name": "text", "selector": "[slot=\"text-body\"], [slot=\"comment\"], [data-click-id=\"text\"], .md", "mode": "text"},
+    {"name": "time", "selector": "time, [data-testid=\"post_timestamp\"]", "mode": "datetime"},
+    {"name": "permalink", "selector": "a[slot=\"full-post-link\"], a[data-click-id=\"comments\"], a[href*=\"/comments/\"]", "mode": "href"}
+  ]
+}

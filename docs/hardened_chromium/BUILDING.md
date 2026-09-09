@@ -69,33 +69,34 @@ Linux build instructions. The explicit `--revision` keeps the solution and its
 dependencies on the supported source revision; running hooks afterward
 downloads the matching toolchain and generated resources.
 
-Do not replace Chromium's `.git` directory with this repository. This
-repository deliberately contains only the overlay.
+Do not replace Chromium's `.git` directory. Apply only the checked bundles from
+the Hardened Chromium working tree.
 
 ## 4. Apply the overlay
 
-Clone this repository beside the Chromium checkout, fetch its `main` branch
-into the Chromium repository, and restore every path supplied by the overlay.
-Commit or otherwise back up local Chromium work first: this operation replaces
-the corresponding upstream files.
+Clone this repository beside the Chromium checkout, then apply the checked
+Privacy bundle. Apply Automation only when that product is wanted. Commit or
+otherwise back up local Chromium work first: this operation replaces the
+corresponding upstream files.
 
 ```sh
 git clone https://github.com/d3v4shish/HardenedChromium.git \
   /path/to/chromium/hardened-overlay
-cd /path/to/chromium/src
-git remote add hardened-overlay /path/to/chromium/hardened-overlay
-git fetch hardened-overlay main
-git ls-tree -r --name-only hardened-overlay/main > /tmp/hardened-overlay-files
-git restore --source hardened-overlay/main --pathspec-from-file=/tmp/hardened-overlay-files
-git add --pathspec-from-file=/tmp/hardened-overlay-files
-git commit -m "Apply Hardened Chromium overlay"
+python3 /path/to/chromium/hardened-overlay/patches/apply.py privacy \
+  --target /path/to/chromium/src
+python3 /path/to/chromium/hardened-overlay/patches/apply.py automation \
+  --target /path/to/chromium/src
 ```
+
+Add `--check` to either command to validate revision, dependency state, and all
+file checksums without writing. Automation requires both the Privacy state
+marker and every Privacy payload file to match.
 
 Review before committing with:
 
 ```sh
-git diff --cached --stat
-git diff --cached --check
+git diff --stat
+git diff --check
 ```
 
 For a private copy of the overlay, substitute its repository URL. Keep the
@@ -109,19 +110,29 @@ The following GN arguments are a practical Linux development configuration.
 They preserve DCHECKs while making iteration reasonable:
 
 ```sh
-gn gen out/Hardened --args='is_debug=false
+gn gen out/HardenedPrivacyDev --args='is_debug=false
 is_component_build=false
 dcheck_always_on=true
 symbol_level=1
 proprietary_codecs=false
-ffmpeg_branding="Chromium"'
-third_party/ninja/ninja -C out/Hardened chrome chrome_sandbox
+ffmpeg_branding="Chromium"
+hardened_chromium_variant="privacy"'
+third_party/ninja/ninja -C out/HardenedPrivacyDev chrome chrome_sandbox
+
+gn gen out/HardenedAutomationDev --args='is_debug=false
+is_component_build=false
+dcheck_always_on=true
+symbol_level=1
+proprietary_codecs=false
+ffmpeg_branding="Chromium"
+hardened_chromium_variant="automation"'
+third_party/ninja/ninja -C out/HardenedAutomationDev chrome chrome_sandbox
 ```
 
 If `depot_tools` is initialized, this is equivalent:
 
 ```sh
-autoninja -C out/Hardened chrome chrome_sandbox
+autoninja -C out/HardenedPrivacyDev chrome chrome_sandbox
 ```
 
 The repository's build helper uses `third_party/ninja/ninja`, so it also works
@@ -129,9 +140,12 @@ when `autoninja` is not on `PATH`. After native changes under `chrome`,
 `content`, `components`, `media`, or Blink, rebuild before testing; Python-only
 tests do not validate the C++ integration.
 
-The launchers expect the binary at `out/Hardened/chrome`. Set
+The launchers expect `out/HardenedPrivacy/chrome` or
+`out/HardenedAutomation/chrome`. Set
 `HARDENED_CHROMIUM_BINARY=/absolute/path/to/chrome` only when deliberately
-using a different output directory.
+using a different output directory. It must have a matching adjacent build
+manifest; use `HARDENED_ALLOW_UNVERIFIED_BINARY=1` only for a local developer
+binary.
 
 ## 6. Install the required Linux sandbox helper
 
@@ -141,7 +155,7 @@ default. Install the helper produced by the same build:
 
 ```sh
 sudo install -o root -g root -m 4755 \
-  out/Hardened/chrome_sandbox /usr/local/sbin/chrome-devel-sandbox
+  out/HardenedPrivacyDev/chrome_sandbox /usr/local/sbin/chrome-devel-sandbox
 ls -l /usr/local/sbin/chrome-devel-sandbox
 ```
 
@@ -155,7 +169,8 @@ export CHROME_DEVEL_SANDBOX=/absolute/path/to/chrome-devel-sandbox
 Reinstall the helper after rebuilding `chrome_sandbox` or switching to a build
 whose sandbox API version differs. Chromium's
 `build/update-linux-sandbox.sh` is an alternative installer; set
-`BUILDTYPE=Hardened` when using it with this output directory.
+`BUILDTYPE=HardenedPrivacyDev` (or `HardenedAutomationDev`) when using it with
+the corresponding output directory.
 
 ## 7. Configure optimized variants (optional)
 
@@ -166,12 +181,12 @@ permitted.
 
 ```sh
 python3 tools/hardened_chromium/configure_performance_builds.py \
-  --variant portable --fetch-pgo --build
+  --product privacy --variant portable --fetch-pgo --build
 python3 tools/hardened_chromium/configure_performance_builds.py \
-  --variant zen4 --build
+  --product automation --variant portable --build
 ```
 
-`HARDENED_CHROMIUM_VARIANT=auto` chooses a current compatible optimized binary
+`HARDENED_CHROMIUM_CPU_VARIANT=auto` chooses a current compatible optimized binary
 when one is available. `portable`, `zen4`, and `legacy` force a particular
 choice. A Zen 4 binary must never be used on an incompatible CPU. Optimized
 variants use their own output directories but can use the sandbox helper from
@@ -179,10 +194,13 @@ section 6 when they were built from the same pinned source revision.
 
 ## 8. Install the local command
 
-After building, install the desktop entry and stable discovery command:
+After building, install the red Privacy desktop entry, green Automation desktop
+entry, and Automation discovery command separately:
 
 ```sh
 tools/hardened_chromium/install_red_desktop_entry.sh
+tools/hardened_chromium/install_green_automation_desktop_entry.sh
+python3 tools/hardened_chromium/install_hardened_chromium_service.py
 hardened-chromium-service capabilities --json
 ```
 
@@ -196,6 +214,9 @@ python3 tools/hardened_chromium/install_hardened_chromium_service.py
 
 Ensure `~/.local/bin` is on `PATH` if the shell cannot find
 `hardened-chromium-service` after installation.
+The desktop entries have separate application IDs and WM classes. Their red
+and green icons identify Privacy and Automation respectively; Automation's
+compiled browser boundary remains blue.
 
 ## 9. Understand the profile policy and private CDP endpoint
 
@@ -244,7 +265,8 @@ privacy-source, Website View, shared-browser, or broker behavior.
 - If GN reports missing toolchains or generated files, run `gclient sync -D`
   and `gclient runhooks` again from `/path/to/chromium/src`.
 - If the compiler is killed, reduce Ninja parallelism, for example
-  `autoninja -C out/Hardened -j 2 chrome chrome_sandbox`, or add RAM/swap.
+  `autoninja -C out/HardenedPrivacyDev -j 2 chrome chrome_sandbox`, or add
+  RAM/swap. Repeat for `out/HardenedAutomationDev`.
 - If a launcher reports that the sandbox helper is missing or out of date,
   rebuild `chrome_sandbox` and repeat section 6.
 - If port `9222` is occupied, stop the conflicting local process or choose one

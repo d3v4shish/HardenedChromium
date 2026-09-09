@@ -24,6 +24,7 @@
 #include "third_party/blink/renderer/core/frame/navigator.h"
 
 #include "base/command_line.h"
+#include "build/branding_buildflags.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_controller.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/execution_context/navigator_base.h"
@@ -99,6 +100,7 @@ bool Navigator::cookieEnabled() const {
 }
 
 bool Navigator::webdriver() const {
+#if BUILDFLAG(HARDENED_CHROMIUM_IS_AUTOMATION)
   // Website View can suppress Chromium's automation marker while retaining a
   // local-only CDP connection. This is intentionally renderer-side so every
   // document gets one stable value for its lifetime.
@@ -106,8 +108,10 @@ bool Navigator::webdriver() const {
           "hardened-webdriver-mode") == "hide") {
     return false;
   }
-  if (RuntimeEnabledFeatures::AutomationControlledEnabled())
+#endif
+  if (RuntimeEnabledFeatures::AutomationControlledEnabled()) {
     return true;
+  }
 
   bool automation_enabled = false;
   probe::ApplyAutomationOverride(GetExecutionContext(), automation_enabled);

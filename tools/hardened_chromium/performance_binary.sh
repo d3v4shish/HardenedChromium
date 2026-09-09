@@ -2,6 +2,35 @@
 
 # Shared binary selection for Hardened Chromium launchers.
 
+claim_hardened_profile_process_lock() {
+  local profile="$1"
+  local product="$2"
+  local profile_lock="${profile}/.hardened-product.lock"
+  local active_product=""
+
+  HARDENED_PROFILE_LOCK_HELD=0
+  if [[ -L "${profile_lock}" ]]; then
+    echo "Profile product lock must not be a symlink: ${profile_lock}" >&2
+    return 1
+  fi
+  exec 8>>"${profile_lock}"
+  chmod 600 "${profile_lock}" 2>/dev/null || true
+  if flock -n 8; then
+    printf '%s\n' "${product}" >"${profile_lock}"
+    HARDENED_PROFILE_LOCK_HELD=1
+    return 0
+  fi
+
+  active_product="$(head -n 1 "${profile_lock}" 2>/dev/null || true)"
+  if [[ "${active_product}" != "${product}" ]]; then
+    echo "Profile ${profile} is active in the ${active_product:-unknown} product." >&2
+    echo "Concurrent cross-product profile ownership is forbidden." >&2
+    return 1
+  fi
+  # A same-product invocation may ask Chromium's own profile singleton to
+  # open another window in the existing process.
+}
+
 hardened_cpu_supports_znver4() {
   [[ "$(uname -m)" == "x86_64" ]] || return 1
   [[ -r /proc/cpuinfo ]] || return 1
@@ -39,22 +68,25 @@ except (OSError, ValueError, TypeError):
 PY
 }
 
-hardened_binary_is_current() {
-  local candidate="$1"
-  local baseline="$2"
-  [[ -x "${candidate}" ]] || return 1
-  [[ ! -x "${baseline}" || ! "${baseline}" -nt "${candidate}" ]]
-}
-
 resolve_hardened_chromium_binary() {
   local source_directory="$1"
+  local product="${2:-privacy}"
   local explicit_binary="${HARDENED_CHROMIUM_BINARY:-}"
-  local requested_variant="${HARDENED_CHROMIUM_VARIANT:-auto}"
+  local requested_variant="${HARDENED_CHROMIUM_CPU_VARIANT:-${HARDENED_CHROMIUM_VARIANT:-auto}}"
   local performance_root="${HARDENED_PERFORMANCE_ROOT:-${source_directory}/out/HardenedPerformance}"
   local manifest="${HARDENED_PERFORMANCE_MANIFEST:-${performance_root}/performance-results.json}"
+  local product_suffix=""
+  case "${product}" in
+    privacy) product_suffix="Privacy" ;;
+    automation) product_suffix="Automation" ;;
+    *)
+      echo "Unknown Hardened Chromium product: ${product}" >&2
+      return 1
+      ;;
+  esac
   local legacy="${source_directory}/out/Hardened/chrome"
-  local portable="${source_directory}/out/HardenedPortable/chrome"
-  local zen4="${source_directory}/out/HardenedZen4/chrome"
+  local portable="${source_directory}/out/Hardened${product_suffix}/chrome"
+  local zen4="${source_directory}/out/Hardened${product_suffix}Zen4/chrome"
   local selected=""
 
   if [[ -n "${explicit_binary}" ]]; then
@@ -66,24 +98,23 @@ resolve_hardened_chromium_binary() {
     auto)
       selected="$(hardened_manifest_variant "${manifest}" || true)"
       if [[ "${selected}" == "zen4" ]] &&
-         hardened_binary_is_current "${zen4}" "${legacy}" &&
+         [[ -x "${zen4}" ]] &&
          hardened_cpu_supports_znver4; then
         printf '%s\n' "${zen4}"
         return 0
       fi
       if [[ "${selected}" == "portable" ]] &&
-         hardened_binary_is_current "${portable}" "${legacy}"; then
+         [[ -x "${portable}" ]]; then
         printf '%s\n' "${portable}"
         return 0
       fi
-      if [[ "${selected}" == "legacy" ]] && [[ -x "${legacy}" ]]; then
-        printf '%s\n' "${legacy}"
-        return 0
-      fi
-      if hardened_binary_is_current "${portable}" "${legacy}"; then
+      if [[ -x "${portable}" ]]; then
         printf '%s\n' "${portable}"
       else
-        printf '%s\n' "${legacy}"
+        # Return the expected product path so the launcher emits a precise
+        # missing-build error. Never silently cross the product boundary via
+        # the historical single-binary output.
+        printf '%s\n' "${portable}"
       fi
       ;;
     portable)
@@ -91,16 +122,20 @@ resolve_hardened_chromium_binary() {
       ;;
     zen4)
       if ! hardened_cpu_supports_znver4; then
-        echo "HARDENED_CHROMIUM_VARIANT=zen4 is incompatible with this CPU." >&2
+        echo "HARDENED_CHROMIUM_CPU_VARIANT=zen4 is incompatible with this CPU." >&2
         return 1
       fi
       printf '%s\n' "${zen4}"
       ;;
     legacy)
+      if [[ "${HARDENED_ALLOW_LEGACY_BINARY:-0}" != "1" ]]; then
+        echo "Legacy binary selection requires HARDENED_ALLOW_LEGACY_BINARY=1." >&2
+        return 1
+      fi
       printf '%s\n' "${legacy}"
       ;;
     *)
-      echo "Unknown HARDENED_CHROMIUM_VARIANT=${requested_variant}; expected auto, portable, zen4, or legacy." >&2
+      echo "Unknown CPU variant ${requested_variant}; expected auto, portable, zen4, or legacy." >&2
       return 1
       ;;
   esac

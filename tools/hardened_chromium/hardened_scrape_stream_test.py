@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 from hardened_scrape_broker import (
     Broker,
@@ -178,6 +179,45 @@ class StreamHubCorrectnessTest(unittest.TestCase):
         self.assertEqual("slow_consumer", subscription.close_reason)
         self.assertLessEqual(
             len(subscription.messages), STREAM_QUEUE_MAX_MESSAGES)
+      finally:
+        broker.close()
+
+  def test_stream_queue_reuses_the_preencoded_event_payload(self) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+      broker = Broker(BrokerConfig(
+          cdp_endpoint="http://127.0.0.1:1",
+          output_root=Path(directory), token="test", start_scheduler=False))
+      job = Job(
+          id="encoded", app_id="app-a", url="https://example.test/",
+          output_dir=Path(directory) / "encoded", config={})
+      try:
+        subscription = broker.event_hub.subscribe(BrokerAuth("app", "app-a"))
+        broker.event_hub.add_job(subscription, job, 0)
+        broker.event_hub.publish(job, "sample", {"value": "payload"})
+        message = subscription.pop(0)
+        self.assertIsNotNone(message)
+        self.assertEqual(message.value, json.loads(message.payload))
+        self.assertEqual(0, subscription.message_bytes)
+      finally:
+        broker.close()
+
+  def test_persistence_failure_is_visible_and_rejects_later_events(self) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+      broker = Broker(BrokerConfig(
+          cdp_endpoint="http://127.0.0.1:1",
+          output_root=Path(directory), token="test", start_scheduler=False))
+      job = Job(
+          id="storage", app_id="app-a", url="https://example.test/",
+          output_dir=Path(directory) / "storage", config={})
+      try:
+        with mock.patch.object(
+            broker.event_writer, "_write_batch", side_effect=OSError("disk full")):
+          broker.add_event(job, "sample", {"value": 1})
+          with self.assertRaisesRegex(RuntimeError, "disk full"):
+            broker.event_writer.flush()
+        self.assertIn("disk full", broker.event_writer.failure)
+        with self.assertRaisesRegex(RuntimeError, "event persistence failed"):
+          broker.add_event(job, "sample", {"value": 2})
       finally:
         broker.close()
 

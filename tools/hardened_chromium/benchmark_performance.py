@@ -42,9 +42,8 @@ DEFAULT_REPORT = SOURCE_DIR / "out/HardenedPerformance/performance-results.json"
 SANDBOX_HELPER = Path(os.environ.get(
     "CHROME_DEVEL_SANDBOX", "/usr/local/sbin/chrome-devel-sandbox"))
 VARIANT_BINARIES = {
-    "legacy": SOURCE_DIR / "out/Hardened/chrome",
-    "portable": SOURCE_DIR / "out/HardenedPortable/chrome",
-    "zen4": SOURCE_DIR / "out/HardenedZen4/chrome",
+    "portable": SOURCE_DIR / "out/HardenedAutomation/chrome",
+    "zen4": SOURCE_DIR / "out/HardenedAutomationZen4/chrome",
 }
 SPEEDOMETER_PATH = (
     "/third_party/blink/perf_tests/speedometer21/InteractiveRunner.html"
@@ -541,6 +540,7 @@ def main() -> int:
     }
   report = {
       "schemaVersion": 1,
+      "product": "automation",
       "generatedAtEpoch": time.time(),
       "selectedVariant": selected,
       "selectionReady": selection_ready,

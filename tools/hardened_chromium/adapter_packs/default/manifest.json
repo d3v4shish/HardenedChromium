@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "id": "hardened-default-adapters",
+  "version": "1.0.0",
+  "adapters": [
+    {
+      "id": "x",
+      "name": "X",
+      "version": "1.0.0",
+      "domains": ["x.com", "twitter.com"],
+      "views": ["current timeline", "search", "thread"],
+      "crawlModes": ["current", "scope", "targets", "account"],
+      "schemaFile": "x.json",
+      "schemaSha256": "106680d052eedf82fcb261b34dba110d1511c3ff1a319ae04a03ddeef57257ba",
+      "advanceDirection": "down",
+      "accountTargetSelector": "a[href*=\"/status/\"]",
+      "safety": ["read-only", "rendered DOM only", "no credential extraction"]
+    },
+    {
+      "id": "linkedin",
+      "name": "LinkedIn",
+      "version": "1.0.0",
+      "domains": ["linkedin.com"],
+      "views": ["current feed", "search", "activity"],
+      "crawlModes": ["current", "scope", "targets", "account"],
+      "schemaFile": "linkedin.json",
+      "schemaSha256": "ee557f905e1223c6d7854e8d204d4a6499a223fe24fd044fb1e6f0ad5ab4f496",
+      "advanceDirection": "down",
+      "accountTargetSelector": "a[href*=\"/posts/\"], a[href*=\"activity\"]",
+      "safety": ["read-only", "rendered DOM only", "no credential extraction"]
+    },
+    {
+      "id": "facebook",
+      "name": "Facebook",
+      "version": "1.0.0",
+      "domains": ["facebook.com"],
+      "views": ["current feed", "group", "profile timeline"],
+      "crawlModes": ["current", "scope", "targets", "account"],
+      "schemaFile": "facebook.json",
+      "schemaSha256": "e3c39dcaed35f9e4b5e3ef0274596ea621be5d57cc549a39365bc168918980af",
+      "advanceDirection": "down",
+      "accountTargetSelector": "a[href*=\"/posts/\"], a[href*=\"story_fbid\"], a[href*=\"/permalink/\"]",
+      "safety": ["read-only", "rendered DOM only", "no credential extraction"]
+    },
+    {
+      "id": "reddit",
+      "name": "Reddit",
+      "version": "1.0.0",
+      "domains": ["reddit.com"],
+      "views": ["current listing", "thread", "rendered comments"],
+      "crawlModes": ["current", "scope", "targets", "account"],
+      "schemaFile": "reddit.json",
+      "schemaSha256": "21351f01f1aeecf08586e7da916bdc39a18cb4c3ac00f9b6bdbd9ce47cb9e523",
+      "advanceDirection": "down",
+      "accountTargetSelector": "a[href*=\"/comments/\"]",
+      "safety": ["read-only", "rendered DOM only", "no credential extraction"]
+    },
+    {
+      "id": "whatsapp",
+      "name": "WhatsApp Web",
+      "version": "1.0.0",
+      "domains": ["web.whatsapp.com"],
+      "views": ["currently selected conversation", "rendered messages"],
+      "crawlModes": ["current", "scope"],
+      "schemaFile": "whatsapp.json",
+      "schemaSha256": "48605f257113faa05dd8156f787ef70abcfc72afb41a3ef955ab1d15fd40d836",
+      "advanceSelector": "#main [data-testid=\"conversation-panel-messages\"]",
+      "advanceDirection": "up",
+      "snapshotSelector": "#main [data-testid=\"conversation-panel-messages\"]",
+      "safety": [
+        "read-only",
+        "rendered DOM only",
+        "selected conversation only",
+        "never collect sidebar, contacts, statuses, or other conversations",
+        "no credential extraction"
+      ]
+    }
+  ]
+}

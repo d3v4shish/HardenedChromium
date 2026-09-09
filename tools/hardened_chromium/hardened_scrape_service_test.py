@@ -17,11 +17,13 @@ from hardened_scrape_service import (
     ServiceConfig,
     ServiceError,
     broker_probe,
+    cdp_probe,
     clear_stale_browser_runtime_files,
     discover_cdp_endpoint,
     diagnostics_document,
     ensure_service,
     profile_locked_by_other_browser,
+    profile_cdp_matches,
     start_browser,
     stop_service,
     stop_shared_browser,
@@ -44,17 +46,50 @@ class ServiceOwnershipTest(unittest.TestCase):
         timeout_seconds=1,
         no_auth=True)
 
-  def test_auto_uses_fixed_nonzero_loopback_endpoint(self) -> None:
+  def test_auto_discovers_the_profile_owned_nonzero_endpoint(self) -> None:
     with tempfile.TemporaryDirectory() as directory:
       config = self.make_config(Path(directory))
       config.profile.mkdir(parents=True)
+      (config.profile / "DevToolsActivePort").write_text(
+          "9222\n/devtools/browser/test-guid", encoding="utf-8")
       self.assertEqual(
           "http://127.0.0.1:9222", discover_cdp_endpoint(config))
+
+  def test_cdp_probe_rejects_a_listener_with_the_wrong_browser_guid(self) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+      config = self.make_config(Path(directory))
+      config.profile.mkdir(parents=True)
+      (config.profile / "DevToolsActivePort").write_text(
+          "9222\n/devtools/browser/profile-guid", encoding="utf-8")
+      listener = HttpProbe(True, 200, {
+          "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/other-guid",
+      })
+      with (mock.patch("hardened_scrape_service.profile_browser_pid",
+                       return_value=123),
+            mock.patch("hardened_scrape_service.http_json",
+                       return_value=listener)):
+        probe = cdp_probe(config)
+      self.assertFalse(probe.ok)
+      self.assertIn("does not match", probe.error)
+
+  def test_launcher_identity_check_requires_marker_port_and_guid(self) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+      profile = Path(directory) / "profile"
+      profile.mkdir()
+      (profile / "DevToolsActivePort").write_text(
+          "9222\n/devtools/browser/profile-guid", encoding="utf-8")
+      matching = HttpProbe(True, 200, {
+          "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/profile-guid",
+      })
+      with mock.patch("hardened_scrape_service.http_json", return_value=matching):
+        self.assertTrue(profile_cdp_matches(profile, "127.0.0.1", 9222))
+      self.assertFalse(profile_cdp_matches(profile, "127.0.0.1", 9333))
 
   def test_ensure_reuses_healthy_browser_and_broker(self) -> None:
     with tempfile.TemporaryDirectory() as directory:
       config = self.make_config(Path(directory))
-      healthy = HttpProbe(True, 200, {"ok": True})
+      healthy = HttpProbe(
+          True, 200, {"ok": True}, endpoint="http://127.0.0.1:9222")
       with (mock.patch("hardened_scrape_service.broker_probe",
                        return_value=healthy),
             mock.patch("hardened_scrape_service.cdp_probe",
@@ -77,7 +112,9 @@ class ServiceOwnershipTest(unittest.TestCase):
       state = {"browser": False, "broker": True}
 
       def cdp_probe(_config):
-        return HttpProbe(state["browser"], 200 if state["browser"] else None)
+        return HttpProbe(
+            state["browser"], 200 if state["browser"] else None,
+            endpoint="http://127.0.0.1:9222" if state["browser"] else "")
 
       def broker_probe(_config, _token):
         return HttpProbe(state["broker"], 200 if state["broker"] else None,
@@ -91,7 +128,7 @@ class ServiceOwnershipTest(unittest.TestCase):
         state["broker"] = False
         return "terminated"
 
-      def start_broker(_config, _token):
+      def start_broker(_config, _token, _endpoint):
         state["broker"] = True
         return 102
 
@@ -113,7 +150,7 @@ class ServiceOwnershipTest(unittest.TestCase):
       self.assertEqual({"browser": True, "broker": True}, result["started"])
       browser.assert_called_once_with(config)
       terminate.assert_called_once()
-      broker.assert_called_once_with(config, "")
+      broker.assert_called_once_with(config, "", "http://127.0.0.1:9222")
 
   def test_stale_profile_markers_do_not_block_browser_recovery(self) -> None:
     with tempfile.TemporaryDirectory() as directory:
@@ -165,7 +202,9 @@ class ServiceOwnershipTest(unittest.TestCase):
       def cdp_probe(_config):
         with state_lock:
           is_ready = ready["browser"]
-        return HttpProbe(is_ready, 200 if is_ready else None, {"ok": True})
+        return HttpProbe(
+            is_ready, 200 if is_ready else None, {"ok": True},
+            endpoint="http://127.0.0.1:9222" if is_ready else "")
 
       def broker_probe(_config, _token):
         with state_lock:
@@ -178,7 +217,7 @@ class ServiceOwnershipTest(unittest.TestCase):
           ready["browser"] = True
         return 101
 
-      def start_broker(_config, _token):
+      def start_broker(_config, _token, _endpoint):
         with state_lock:
           starts["broker"] += 1
           ready["broker"] = True
@@ -237,6 +276,7 @@ class ServiceOwnershipTest(unittest.TestCase):
           "HARDENED_CHROMIUM_NAMED_PROFILE_ROOT": str(root / "profiles"),
           "HARDENED_CHROMIUM_RUNTIME_DIR": str(root / "runtime"),
           "HARDENED_MEDIA_MODE": "synthetic",
+          "HARDENED_ALLOW_UNVERIFIED_BINARY": "1",
       })
       launcher = Path(__file__).resolve().with_name("run_for_automation.sh")
       completed = subprocess.run(

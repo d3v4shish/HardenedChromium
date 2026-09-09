@@ -3,11 +3,12 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Configure and optionally compile portable and Zen 4 Hardened Chromium."""
+"""Configure product-isolated Hardened Chromium release builds."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -26,9 +27,13 @@ V8_PGO_TOOL = SOURCE_DIR / "v8/tools/builtins-pgo/download_profiles.py"
 V8_PGO_PROFILE = SOURCE_DIR / "v8/tools/builtins-pgo/profiles/x64.profile"
 DEPOT_TOOLS = SOURCE_DIR / "third_party/depot_tools"
 PGO_GS_URL = "chromium-optimization-profiles/pgo_profiles"
-VARIANTS = {
-    "portable": (SOURCE_DIR / "out/HardenedPortable", "portable"),
-    "zen4": (SOURCE_DIR / "out/HardenedZen4", "znver4"),
+PRODUCTS = {
+    "privacy": ("Privacy", "red", False),
+    "automation": ("Automation", "blue", True),
+}
+TUNINGS = {
+    "portable": ("", "portable"),
+    "zen4": ("Zen4", "znver4"),
 }
 
 
@@ -66,8 +71,8 @@ def pgo_profile(fetch: bool) -> Path:
   except subprocess.CalledProcessError as error:
     raise SystemExit(
         "The pinned Linux PGO profile is missing. Re-run with --fetch-pgo "
-        "while network access is available; the existing out/Hardened build "
-        "has not been changed.") from error
+        "while network access is available; existing product builds have not "
+        "been changed.") from error
   value = json.loads(raw)
   profile = Path(value)
   if not profile.is_file():
@@ -79,7 +84,7 @@ def pgo_profile(fetch: bool) -> Path:
   return profile
 
 
-def gn_args(profile: Path, tuning: str) -> str:
+def gn_args(profile: Path, product: str, tuning: str) -> str:
   values = {
       "is_debug": False,
       "is_component_build": False,
@@ -93,6 +98,7 @@ def gn_args(profile: Path, tuning: str) -> str:
       "is_cfi": True,
       "proprietary_codecs": False,
       "ffmpeg_branding": "Chromium",
+      "hardened_chromium_variant": product,
       "hardened_chromium_cpu_tuning": tuning,
   }
   lines = []
@@ -105,12 +111,55 @@ def gn_args(profile: Path, tuning: str) -> str:
   return "\n".join(lines)
 
 
-def configure(variant: str, profile: Path) -> Path:
-  output_dir, tuning = VARIANTS[variant]
+def output_directory(product: str, variant: str) -> Path:
+  product_suffix, _, _ = PRODUCTS[product]
+  tuning_suffix, _ = TUNINGS[variant]
+  return SOURCE_DIR / f"out/Hardened{product_suffix}{tuning_suffix}"
+
+
+def source_revision() -> str:
+  try:
+    return run(["git", "rev-parse", "HEAD"], capture=True)
+  except subprocess.CalledProcessError:
+    return "unknown"
+
+
+def write_manifest(output_dir: Path, product: str, variant: str,
+                   profile: Path, *, built: bool) -> None:
+  _, boundary, remote_debugging = PRODUCTS[product]
+  _, tuning = TUNINGS[variant]
+  binary = output_dir / "chrome"
+  if built and not binary.is_file():
+    raise FileNotFoundError(f"built Chromium binary is missing: {binary}")
+  manifest = {
+      "schemaVersion": 1,
+      "product": product,
+      "boundary": boundary,
+      "remoteDebugging": remote_debugging,
+      "adapterPackEligible": product == "automation",
+      "cpuTuning": tuning,
+      "sourceRevision": source_revision(),
+      "pgoProfile": str(profile.relative_to(SOURCE_DIR)),
+      "built": built,
+  }
+  if built:
+    digest = hashlib.sha256()
+    with binary.open("rb") as stream:
+      for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        digest.update(chunk)
+    manifest["binarySha256"] = digest.hexdigest()
+  (output_dir / "hardened-build-manifest.json").write_text(
+      json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def configure(product: str, variant: str, profile: Path) -> Path:
+  output_dir = output_directory(product, variant)
+  _, tuning = TUNINGS[variant]
   run([
       str(GN), "gen", str(output_dir),
-      f"--args={gn_args(profile, tuning)}",
+      f"--args={gn_args(profile, product, tuning)}",
   ])
+  write_manifest(output_dir, product, variant, profile, built=False)
   return output_dir
 
 
@@ -118,6 +167,8 @@ def main() -> int:
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument(
       "--variant", choices=("portable", "zen4", "both"), default="both")
+  parser.add_argument(
+      "--product", choices=("privacy", "automation", "both"), default="both")
   parser.add_argument("--fetch-pgo", action="store_true")
   parser.add_argument("--build", action="store_true",
                       help="Compile chrome after generating each build.")
@@ -126,14 +177,17 @@ def main() -> int:
   args = parser.parse_args()
 
   profile = pgo_profile(args.fetch_pgo)
-  variants = VARIANTS if args.variant == "both" else (args.variant,)
-  for variant in variants:
-    output_dir = configure(variant, profile)
-    if args.build:
-      command = [str(NINJA), "-C", str(output_dir)]
-      if args.jobs > 0:
-        command += ["-j", str(args.jobs)]
-      run(command + ["chrome"])
+  products = PRODUCTS if args.product == "both" else (args.product,)
+  variants = TUNINGS if args.variant == "both" else (args.variant,)
+  for product in products:
+    for variant in variants:
+      output_dir = configure(product, variant, profile)
+      if args.build:
+        command = [str(NINJA), "-C", str(output_dir)]
+        if args.jobs > 0:
+          command += ["-j", str(args.jobs)]
+        run(command + ["chrome"])
+        write_manifest(output_dir, product, variant, profile, built=True)
   return 0
 
 

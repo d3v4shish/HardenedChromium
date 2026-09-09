@@ -2,20 +2,22 @@
 
 ## Browser roles and visual boundaries
 
-The default automation profile is `out/HardenedAutomationProfile`. It is one
-visible Chromium process shared by the user and all broker applications. Its
-blue boundary means **application-accessible backend**. It remains blue even
-when private sources are active.
+The default Automation profile is `out/HardenedAutomationProfile`. It is one
+visible process shared by the user and broker applications. Its blue boundary
+means **application-accessible backend**. The separate Privacy binary uses
+`out/HardenedPrivacyProfile`, is always red, and cannot expose CDP.
 
-Named profiles are isolated user browsing sessions:
+Privacy browsing is launched explicitly:
 
 ```sh
-tools/hardened_chromium/run_for_automation.sh --named-profile research
+tools/hardened_chromium/run_privacy.sh
 ```
 
-They do not expose the broker backend. A hardened named profile uses the red
-boundary while privacy protection is active. The distinction matters: blue
-means an application can create tabs in that profile; red means it cannot.
+Named profiles passed to the Automation launcher remain blue Automation
+profiles even when they omit shared-backend flags. Profile role markers prevent
+accidentally opening either product's default profile with the other. The
+explicit `HARDENED_ALLOW_PROFILE_SHARING=1` override allows sequential reuse;
+a product-tagged process lock still rejects a concurrent cross-product owner.
 
 ## Privacy controls
 
@@ -27,7 +29,8 @@ the `/service/privacy-*` APIs. Source choice never grants a permission.
 
 Rules are read asynchronously from the browser's rules file. Permission paths
 use an in-memory snapshot and fall back to fake sources while a new snapshot
-loads, preventing a blocking UI callback or a transient real-source leak.
+loads. Missing or malformed policy also keeps the launcher/default source on
+fake, preventing a blocking UI callback or a transient real-source leak.
 
 Media/location defaults need a shared-browser restart. The ordinary `restart`
 command restarts only the broker and intentionally leaves browser windows open.

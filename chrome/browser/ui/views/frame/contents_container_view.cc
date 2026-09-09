@@ -8,9 +8,9 @@
 #include <optional>
 #include <utility>
 
-#include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/i18n/rtl.h"
+#include "build/branding_buildflags.h"
 #include "chrome/browser/actor/ui/actor_overlay_web_view.h"
 #include "chrome/browser/devtools/devtools_contents_resizing_strategy.h"
 #include "chrome/browser/enterprise/data_protection/data_protection_overlay_view.h"
@@ -36,8 +36,6 @@
 #include "chrome/common/chrome_features.h"
 #include "components/search/ntp_features.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/content_switches.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -63,9 +61,11 @@ constexpr int kSplitViewContentPadding = 4;
 constexpr int kNewTabFooterSeparatorHeight = 1;
 constexpr int kNewTabFooterHeight = 56;
 constexpr int kHardenedModeBorderThickness = 3;
-constexpr SkColor kHardenedPrivateBorderColor = SkColorSetRGB(0xD9, 0x30, 0x25);
-constexpr SkColor kHardenedAppBackendBorderColor =
-    SkColorSetRGB(0x1A, 0x73, 0xE8);
+#if BUILDFLAG(HARDENED_CHROMIUM_IS_AUTOMATION)
+constexpr SkColor kHardenedModeBorderColor = SkColorSetRGB(0x1A, 0x73, 0xE8);
+#else
+constexpr SkColor kHardenedModeBorderColor = SkColorSetRGB(0xD9, 0x30, 0x25);
+#endif
 }  // namespace
 
 ContentsContainerView::ContentsContainerView(BrowserView* browser_view)
@@ -168,24 +168,15 @@ ContentsContainerView::ContentsContainerView(BrowserView* browser_view)
             .Build());
   }
 
-  const bool is_hardened_app_backend =
-      base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kRemoteDebuggingPort);
-  const bool is_hardened_private_browser =
-      base::FeatureList::IsEnabled(blink::features::kHardenedPrivacyMode);
-  if (is_hardened_app_backend || is_hardened_private_browser) {
-    auto hardened_mode_border = std::make_unique<views::View>();
-    hardened_mode_border->SetPaintToLayer();
-    hardened_mode_border->layer()->SetName("HardenedModeBorderView");
-    hardened_mode_border->layer()->SetFillsBoundsOpaquely(false);
-    hardened_mode_border->SetCanProcessEventsWithinSubtree(false);
-    hardened_mode_border->GetViewAccessibility().SetIsInvisible(true);
-    hardened_mode_border->SetBorder(views::CreateSolidBorder(
-        kHardenedModeBorderThickness, is_hardened_app_backend
-                                          ? kHardenedAppBackendBorderColor
-                                          : kHardenedPrivateBorderColor));
-    hardened_mode_border_view_ = AddChildView(std::move(hardened_mode_border));
-  }
+  auto hardened_mode_border = std::make_unique<views::View>();
+  hardened_mode_border->SetPaintToLayer();
+  hardened_mode_border->layer()->SetName("HardenedModeBorderView");
+  hardened_mode_border->layer()->SetFillsBoundsOpaquely(false);
+  hardened_mode_border->SetCanProcessEventsWithinSubtree(false);
+  hardened_mode_border->GetViewAccessibility().SetIsInvisible(true);
+  hardened_mode_border->SetBorder(views::CreateSolidBorder(
+      kHardenedModeBorderThickness, kHardenedModeBorderColor));
+  hardened_mode_border_view_ = AddChildView(std::move(hardened_mode_border));
 
   mini_toolbar_ = AddChildView(std::make_unique<MultiContentsViewMiniToolbar>(
       browser_view, contents_view_));

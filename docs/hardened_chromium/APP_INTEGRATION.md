@@ -100,3 +100,38 @@ Atom, JSON Feed, HTML, CSV, and JSON outputs. The caller specifies an optional
 schema or consumes the normalized items; it does not parse Chromium's DOM
 itself. Feed/archive derivation runs in a separate short-lived process so it
 does not compete with browser rendering or event fanout.
+
+## Default adapters and crawl bounds
+
+Call `GET /adapters` to discover the installed, checksum-verified local pack.
+Jobs select X, LinkedIn, Facebook, Reddit, or WhatsApp automatically from the
+URL; an explicit mismatched adapter returns HTTP 400. For example:
+
+```json
+{
+  "url": "https://www.reddit.com/r/example/",
+  "crawlMode": "scope",
+  "maxItems": 500,
+  "timeoutSeconds": 900
+}
+```
+
+`current` reads the currently rendered view, `scope` scrolls that view until a
+limit or no-progress bound, `targets` visits the supplied same-adapter URLs,
+and `account` discovers rendered target links only after
+`"confirmAccount": true`. Jobs and items report adapter/pack versions and
+emit `adapter_selected`, `adapter_progress`, and
+`adapter_targets_discovered` events.
+
+Adapters are best-effort contracts over currently rendered markup, not private
+site APIs. Login walls, virtualization, rate limits, or site markup changes can
+reduce completeness; the terminal job reason and progress events distinguish
+bounded exhaustion, item limit, manual interaction, and timeout.
+Redirects outside the selected adapter's domains fail the job, and content
+from the redirected page is not written as items or raw artifacts. This check
+also covers redirects after the main crawl loop.
+
+WhatsApp accepts only `current` and `scope`. It reads only the rendered
+conversation panel below `#main`; a missing panel yields no content. The broker
+rejects adapter bypass, custom schemas, targets, and account enumeration for
+WhatsApp and omits full-document MHTML.

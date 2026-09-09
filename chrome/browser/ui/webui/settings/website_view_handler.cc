@@ -4,7 +4,9 @@
 
 #include "chrome/browser/ui/webui/settings/website_view_handler.h"
 
+#include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "base/files/file_util.h"
@@ -15,6 +17,8 @@
 #include "base/values.h"
 #include "chrome/browser/profiles/profile.h"
 #include "content/public/browser/web_ui.h"
+#include "url/gurl.h"
+#include "url/origin.h"
 
 namespace settings {
 
@@ -60,6 +64,117 @@ base::DictValue CreateDefaultWebsiteView() {
   return document;
 }
 
+bool NormalizeSource(base::DictValue* policy,
+                     std::string_view key,
+                     std::string_view fallback) {
+  const base::Value* raw_value = policy->Find(key);
+  if (raw_value &&
+      (!raw_value->is_string() || (raw_value->GetString() != "fake" &&
+                                   raw_value->GetString() != "real"))) {
+    return false;
+  }
+  if (!raw_value) {
+    policy->Set(key, fallback);
+  }
+  return true;
+}
+
+bool NormalizeDefaultAutomation(base::DictValue* policy) {
+  base::Value* raw_exposures = policy->Find("exposures");
+  if (!raw_exposures) {
+    policy->Set("exposures", base::DictValue());
+    raw_exposures = policy->Find("exposures");
+  }
+  if (!raw_exposures->is_dict()) {
+    return false;
+  }
+  base::DictValue& exposures = raw_exposures->GetDict();
+  const base::Value* automation = exposures.Find("automation");
+  if (automation &&
+      (!automation->is_string() || (automation->GetString() != "hide" &&
+                                    automation->GetString() != "report"))) {
+    return false;
+  }
+  if (!automation) {
+    exposures.Set("automation", "hide");
+  }
+  return true;
+}
+
+bool CanonicalizeOrigin(std::string_view input, std::string* output) {
+  GURL url(input);
+  if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS() || !url.has_host() ||
+      url.has_username() || url.has_password()) {
+    return false;
+  }
+  const url::Origin origin = url::Origin::Create(url);
+  if (origin.opaque()) {
+    return false;
+  }
+  *output = origin.Serialize();
+  return true;
+}
+
+bool NormalizeWebsiteView(base::DictValue* document,
+                          bool reject_duplicate_origins) {
+  base::DictValue* defaults = document->FindDict("default");
+  base::ListValue* rules = document->FindList("rules");
+  if (!defaults || !rules) {
+    return false;
+  }
+
+  for (std::string_view key :
+       {"cameraSource", "microphoneSource", "locationSource"}) {
+    if (!NormalizeSource(defaults, key, "fake")) {
+      return false;
+    }
+  }
+  if (!NormalizeDefaultAutomation(defaults)) {
+    return false;
+  }
+
+  const std::string* default_camera = defaults->FindString("cameraSource");
+  const std::string* default_microphone =
+      defaults->FindString("microphoneSource");
+  const std::string* default_location = defaults->FindString("locationSource");
+  if (!default_camera || !default_microphone || !default_location) {
+    return false;
+  }
+
+  base::ListValue normalized_rules;
+  std::set<std::string> seen_origins;
+  for (const base::Value& rule_value : *rules) {
+    if (!rule_value.is_dict()) {
+      return false;
+    }
+    base::DictValue rule = rule_value.GetDict().Clone();
+    const std::string* rule_origin = rule.FindString("origin");
+    std::string origin;
+    if (!rule_origin || !CanonicalizeOrigin(*rule_origin, &origin)) {
+      return false;
+    }
+    if (!seen_origins.insert(origin).second) {
+      if (reject_duplicate_origins) {
+        return false;
+      }
+      continue;
+    }
+    if (!NormalizeSource(&rule, "cameraSource", *default_camera) ||
+        !NormalizeSource(&rule, "microphoneSource", *default_microphone) ||
+        !NormalizeSource(&rule, "locationSource", *default_location)) {
+      return false;
+    }
+    rule.Set("origin", origin);
+    if (!rule.FindString("id")) {
+      rule.Set("id", origin);
+    }
+    normalized_rules.Append(std::move(rule));
+  }
+  document->Set("rules", std::move(normalized_rules));
+  document->Set("schemaVersion", kWebsiteViewSchemaVersion);
+  return true;
+}
+
 base::DictValue ReadWebsiteView(const base::FilePath& path) {
   std::string json;
   if (!base::ReadFileToString(path, &json)) {
@@ -71,7 +186,7 @@ base::DictValue ReadWebsiteView(const base::FilePath& path) {
     return CreateDefaultWebsiteView();
   }
   base::DictValue result = std::move(*parsed).TakeDict();
-  if (!result.FindDict("default") || !result.FindList("rules")) {
+  if (!NormalizeWebsiteView(&result, false)) {
     return CreateDefaultWebsiteView();
   }
   result.Set("schemaVersion", kWebsiteViewSchemaVersion);
@@ -79,10 +194,9 @@ base::DictValue ReadWebsiteView(const base::FilePath& path) {
 }
 
 bool WriteWebsiteView(const base::FilePath& path, base::DictValue document) {
-  if (!document.FindDict("default") || !document.FindList("rules")) {
+  if (!NormalizeWebsiteView(&document, true)) {
     return false;
   }
-  document.Set("schemaVersion", kWebsiteViewSchemaVersion);
   std::string json;
   if (!base::JSONWriter::Write(document, &json)) {
     return false;
@@ -116,8 +230,8 @@ void WebsiteViewHandler::HandleGetWebsiteView(const base::ListValue& args) {
   CHECK_EQ(1U, args.size());
   AllowJavascript();
   ResolveJavascriptCallback(
-      args[0], ReadWebsiteView(profile_->GetPath().AppendASCII(
-                   kWebsiteViewFileName)));
+      args[0],
+      ReadWebsiteView(profile_->GetPath().AppendASCII(kWebsiteViewFileName)));
 }
 
 void WebsiteViewHandler::HandleSetWebsiteView(const base::ListValue& args) {
@@ -130,8 +244,8 @@ void WebsiteViewHandler::HandleSetWebsiteView(const base::ListValue& args) {
     return;
   }
   ResolveJavascriptCallback(
-      args[0], ReadWebsiteView(profile_->GetPath().AppendASCII(
-                   kWebsiteViewFileName)));
+      args[0],
+      ReadWebsiteView(profile_->GetPath().AppendASCII(kWebsiteViewFileName)));
 }
 
 }  // namespace settings

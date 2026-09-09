@@ -30,9 +30,9 @@ namespace {
 
 HardenedLocationSource DefaultLocationSource() {
   return base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-             switches::kHardenedDefaultLocationSource) == "fake"
-             ? HardenedLocationSource::kFake
-             : HardenedLocationSource::kReal;
+             switches::kHardenedDefaultLocationSource) == "real"
+             ? HardenedLocationSource::kReal
+             : HardenedLocationSource::kFake;
 }
 
 class HardenedPrivacySourceState
@@ -135,9 +135,9 @@ class PrivacyRuleCache {
       // unrelated site's rule.
       found = values_.find("\n" + std::string(key));
     }
-    return {found == values_.end() ? std::nullopt
-                                   : std::optional(found->second),
-            rules_path == loaded_path_};
+    return {
+        found == values_.end() ? std::nullopt : std::optional(found->second),
+        rules_path == loaded_path_};
   }
 
  private:
@@ -152,8 +152,7 @@ class PrivacyRuleCache {
     }
     reload_in_flight_ = true;
     base::ThreadPool::PostTask(
-        FROM_HERE,
-        {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
+        FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
         base::BindOnce(&PrivacyRuleCache::ReloadOnWorker,
                        base::Unretained(this), requested_path_));
   }
@@ -264,8 +263,8 @@ HardenedLocationSource GetHardenedLocationSource(WebContents* web_contents) {
       return *state->explicit_location_source();
     }
     bool current_rules_loaded = true;
-    if (auto remembered = GetRememberedSource(
-            web_contents, "locationSource", &current_rules_loaded)) {
+    if (auto remembered = GetRememberedSource(web_contents, "locationSource",
+                                              &current_rules_loaded)) {
       return *remembered == "real" ? HardenedLocationSource::kReal
                                    : HardenedLocationSource::kFake;
     }
@@ -308,8 +307,8 @@ std::optional<HardenedMediaSource> GetRememberedHardenedMicrophoneSource(
 std::optional<HardenedMediaSource> GetRememberedHardenedCameraSourceForOrigin(
     const url::Origin& origin) {
   bool current_rules_loaded = true;
-  if (auto source = GetRememberedSource(origin, "cameraSource",
-                                        &current_rules_loaded)) {
+  if (auto source =
+          GetRememberedSource(origin, "cameraSource", &current_rules_loaded)) {
     return *source == "real" ? HardenedMediaSource::kReal
                              : HardenedMediaSource::kFake;
   }

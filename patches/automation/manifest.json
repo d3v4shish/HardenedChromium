@@ -1,0 +1,234 @@
+{
+  "baseRevision": "f77d44b339946cd682d311c6c0bc922c32579fbd",
+  "files": [
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "build/config/hardened_chromium/automation.gni",
+      "sha256": "37312691a9bc78e1ab1fb2da49174593b8c8a48b505d2925a863d379447071f9"
+    },
+    {
+      "baseSha256": "85a09f1a67e1c9a0993b7f66b56ad79a35d83712c2d33c07e2d10286b8be324c",
+      "mode": 420,
+      "path": "third_party/blink/renderer/core/BUILD.gn",
+      "sha256": "2cd055c532c219f7b95ca44a69c33e3dfc61e9ab33f33690a3d386c024812c71"
+    },
+    {
+      "baseSha256": "df8ed975407e288da7b276c3db97f92dfaf796f9e2b4e6e13679ee508713d904",
+      "mode": 420,
+      "path": "third_party/blink/renderer/core/frame/navigator.cc",
+      "sha256": "a28dd2cfde30e7097ccafbd6d8c734131661aa31c040a34b45646d343e926edc"
+    },
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "tools/hardened_chromium/adapter_packs/default/facebook.json",
+      "sha256": "e3c39dcaed35f9e4b5e3ef0274596ea621be5d57cc549a39365bc168918980af"
+    },
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "tools/hardened_chromium/adapter_packs/default/fixtures.json",
+      "sha256": "14ccbfef751fa6c1076832f5b4acd28323150e285d8fac8e905f423207855d6e"
+    },
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "tools/hardened_chromium/adapter_packs/default/linkedin.json",
+      "sha256": "ee557f905e1223c6d7854e8d204d4a6499a223fe24fd044fb1e6f0ad5ab4f496"
+    },
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "tools/hardened_chromium/adapter_packs/default/manifest.json",
+      "sha256": "91356daaecfcf52f7785e70e112543d3e3c62b1d12499c4a29b53abb0153aee5"
+    },
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "tools/hardened_chromium/adapter_packs/default/reddit.json",
+      "sha256": "21351f01f1aeecf08586e7da916bdc39a18cb4c3ac00f9b6bdbd9ce47cb9e523"
+    },
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "tools/hardened_chromium/adapter_packs/default/whatsapp.json",
+      "sha256": "48605f257113faa05dd8156f787ef70abcfc72afb41a3ef955ab1d15fd40d836"
+    },
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "tools/hardened_chromium/adapter_packs/default/x.json",
+      "sha256": "106680d052eedf82fcb261b34dba110d1511c3ff1a319ae04a03ddeef57257ba"
+    },
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "tools/hardened_chromium/benchmark_adapters.py",
+      "sha256": "b8a648f0fafe717171e5b6562538771108f83d37788cb13ffd89f05a18501b18"
+    },
+    {
+      "baseSha256": null,
+      "mode": 493,
+      "path": "tools/hardened_chromium/benchmark_performance.py",
+      "sha256": "4d5d29d7a43061f87329b9dbff09340d77dbc3de8afd9cd4940129fcde4e8901"
+    },
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "tools/hardened_chromium/benchmark_stream_transport.py",
+      "sha256": "6c0a868e4678a023f0b8e3d088212f84d43bf4a49ee2383245ebf0851e18f58b"
+    },
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "tools/hardened_chromium/broker_connect_example.js",
+      "sha256": "494a4308742e1b36c4bd082c9f6d9df901b8c94c4c15fabe0ec7cdb0e2e49c67"
+    },
+    {
+      "baseSha256": null,
+      "mode": 493,
+      "path": "tools/hardened_chromium/configure_obs_media.py",
+      "sha256": "c43898228ba38a0aea95e519c59b3ce3e5428fd012f235e3d2cfa9ae82fcdfc9"
+    },
+    {
+      "baseSha256": null,
+      "mode": 493,
+      "path": "tools/hardened_chromium/generate_loop_video.py",
+      "sha256": "8ade3ece809cf7369869a3bd9c0b85e8c4272cf52ccd06bf083b444f28b73559"
+    },
+    {
+      "baseSha256": null,
+      "mode": 493,
+      "path": "tools/hardened_chromium/hardened_adapter_pack.py",
+      "sha256": "ea728353da43e11707233e2e0b9b24a2f00a0eb788c757248c55c3625b0bf84a"
+    },
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "tools/hardened_chromium/hardened_adapter_pack_test.py",
+      "sha256": "064b7841eb5b60a72f932cdce19c8393c26ce722db79ab2c6bfe067b690208f4"
+    },
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "tools/hardened_chromium/hardened_mode_test.html",
+      "sha256": "8be69deee3cfbc96727d4a06992a684dbaa2a2dc7e726c34d4108180ebf58c77"
+    },
+    {
+      "baseSha256": null,
+      "mode": 493,
+      "path": "tools/hardened_chromium/hardened_scrape_broker.py",
+      "sha256": "3fffb18450a4edd5d46a02b3f3ec99c8fa6d72d2d96ac6afb39f9b998d231f37"
+    },
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "tools/hardened_chromium/hardened_scrape_broker_test.py",
+      "sha256": "7295da1578d1f6f00734861cba537df9640cb1431f676fb06109b4f513211e02"
+    },
+    {
+      "baseSha256": null,
+      "mode": 493,
+      "path": "tools/hardened_chromium/hardened_scrape_client.py",
+      "sha256": "80eca539033d7a7718ecc0126f2ef7128e56029b46fe346695904cc831107c7c"
+    },
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "tools/hardened_chromium/hardened_scrape_install_test.py",
+      "sha256": "4f6024143eb3585f9fcc31e11273f7639befdf6ba100ebfc6a60a11beb2173cd"
+    },
+    {
+      "baseSha256": null,
+      "mode": 493,
+      "path": "tools/hardened_chromium/hardened_scrape_performance_test.py",
+      "sha256": "1c8e06ebf79e2bbbfabb92d57c54caf19843f2293b879682c2d5b6a6b2ae9f08"
+    },
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "tools/hardened_chromium/hardened_scrape_security_test.py",
+      "sha256": "8143fca20a00b0b25d49d66e1065ea5c621a561f563c721e11874d5e7b6ca17b"
+    },
+    {
+      "baseSha256": null,
+      "mode": 493,
+      "path": "tools/hardened_chromium/hardened_scrape_service.py",
+      "sha256": "63ea9f695154c354178a44865f92de8b64dba2fd5f20e1a13a33b219cb611fc7"
+    },
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "tools/hardened_chromium/hardened_scrape_service_test.py",
+      "sha256": "0056cd7d3644d71c6af4166a9eb34d95a4e089fda123f01a3d3eb53a168da8d2"
+    },
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "tools/hardened_chromium/hardened_scrape_stream_test.py",
+      "sha256": "55b0b76792325d370d2765b3d83135e789454e558b340455f2e67e2a2112c0bf"
+    },
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "tools/hardened_chromium/icons/hardened-chromium-automation.svg",
+      "sha256": "e76a2c307be48a02230491d81a34eae61da4b241fb2e55ee02e7393ba37ee720"
+    },
+    {
+      "baseSha256": null,
+      "mode": 493,
+      "path": "tools/hardened_chromium/install_green_automation_desktop_entry.sh",
+      "sha256": "03335712765a1598508e77b347261a0634441250359e18f075f3848326cc86a1"
+    },
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "tools/hardened_chromium/install_hardened_chromium_service.py",
+      "sha256": "aa2acaa7d03966d39bff04381944d5c38ca53d98a254e2db338c6c5098f504fd"
+    },
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "tools/hardened_chromium/manual_multi_app_test.py",
+      "sha256": "c86fd5e6f9f19f734c385f1546e51cc51f541c0b41672ff74bc805cddde8b2a9"
+    },
+    {
+      "baseSha256": null,
+      "mode": 420,
+      "path": "tools/hardened_chromium/performance_fixture.html",
+      "sha256": "44298d8bc0151e089b4844a356f5fa0192d0b3eefa891611ec63eddb3c2424af"
+    },
+    {
+      "baseSha256": null,
+      "mode": 493,
+      "path": "tools/hardened_chromium/product_smoke.py",
+      "sha256": "e8e9192edb9a5d34515df46a167a7deb36e0d785d36bb1dc0eee53ca60f9ab39"
+    },
+    {
+      "baseSha256": null,
+      "mode": 493,
+      "path": "tools/hardened_chromium/run_for_automation.sh",
+      "sha256": "cdffa4cb7b077444fdfb5958c9bb8ff90420bb709a27bcf1dbf808a65f860bdc"
+    },
+    {
+      "baseSha256": null,
+      "mode": 493,
+      "path": "tools/hardened_chromium/run_headless_for_automation.sh",
+      "sha256": "09b32b595c4058cf753b9829bc28172bddb6837bac171280d5c47b4b9ea7bc52"
+    },
+    {
+      "baseSha256": null,
+      "mode": 493,
+      "path": "tools/hardened_chromium/run_with_virtual_media.sh",
+      "sha256": "c06ce96dc08589027f749975c50c2493171e84d5fcfcd9e531ab244411dd2e4f"
+    }
+  ],
+  "id": "automation",
+  "payloadSha256": "fb51f13785d5f3511cd61720216b1510de805c9120b70d617ee159004a6cb4c1",
+  "product": "automation",
+  "requires": [
+    "privacy"
+  ],
+  "schemaVersion": 1
+}

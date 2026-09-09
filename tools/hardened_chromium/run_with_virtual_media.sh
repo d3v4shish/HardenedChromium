@@ -5,7 +5,7 @@ set -euo pipefail
 script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source_directory="$(cd "${script_directory}/../.." && pwd)"
 source "${script_directory}/performance_binary.sh"
-chromium_binary="$(resolve_hardened_chromium_binary "${source_directory}")"
+chromium_binary="$(resolve_hardened_chromium_binary "${source_directory}" automation)"
 virtual_media_profile="${HARDENED_VIRTUAL_MEDIA_PROFILE:-${source_directory}/out/HardenedVirtualMediaProfile}"
 sandbox_helper="${CHROME_DEVEL_SANDBOX:-/usr/local/sbin/chrome-devel-sandbox}"
 
@@ -20,15 +20,42 @@ if [[ ! -x "${sandbox_helper}" ]]; then
   exit 1
 fi
 
+product_validation_args=(
+  --product automation
+  --binary "${chromium_binary}"
+  --profile "${virtual_media_profile}"
+)
+if [[ "${HARDENED_ALLOW_PROFILE_SHARING:-0}" == "1" ]]; then
+  product_validation_args+=(--allow-profile-sharing)
+fi
+if [[ "${HARDENED_ALLOW_UNVERIFIED_BINARY:-0}" == "1" ]]; then
+  product_validation_args+=(--allow-unverified-binary)
+fi
+python3 "${script_directory}/hardened_product.py" \
+  "${product_validation_args[@]}" >/dev/null
+claim_hardened_profile_process_lock "${virtual_media_profile}" automation
+
 export CHROME_DEVEL_SANDBOX="${sandbox_helper}"
 
 # Replace platform camera and microphone capture with Chromium's deterministic
 # test devices. Permission is not auto-granted: websites still trigger the
 # browser-controlled camera/microphone prompt. A separate profile ensures an
 # already-running normal browser cannot absorb this process-wide option.
-exec "${chromium_binary}" \
-  --user-data-dir="${virtual_media_profile}" \
-  --no-first-run \
-  --no-default-browser-check \
-  --use-fake-device-for-media-stream \
+chromium_command=(
+  "${chromium_binary}"
+  --user-data-dir="${virtual_media_profile}"
+  --no-first-run
+  --no-default-browser-check
+  --use-fake-device-for-media-stream
   "$@"
+)
+
+if [[ "${HARDENED_PROFILE_LOCK_HELD}" == "1" ]]; then
+  "${chromium_command[@]}" &
+  browser_pid=$!
+  trap 'kill -TERM "${browser_pid}" 2>/dev/null || true' HUP INT TERM
+  wait "${browser_pid}"
+  exit $?
+fi
+
+exec "${chromium_command[@]}"

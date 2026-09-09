@@ -32,6 +32,12 @@ from urllib.parse import urlparse
 import urllib.error
 import urllib.request
 
+from hardened_adapter_pack import (
+    DEFAULT_PACK_DIR,
+    AdapterError,
+    load_adapter_pack,
+)
+from hardened_product import ProductError, claim_profile, verify_binary_product
 from hardened_website_view import load_document as load_website_view
 
 
@@ -46,6 +52,7 @@ SERVICE_BACKEND_ID = "hardened-chromium-broker"
 SERVICE_PROTOCOL_VERSION = 1
 SERVICE_CAPABILITIES = (
     "browser-jobs",
+    "default-adapters",
     "extraction-schemas",
     "feed-generation",
     "websocket-events",
@@ -97,6 +104,7 @@ class HttpProbe:
   status: int | None = None
   payload: dict[str, Any] | None = None
   error: str = ""
+  endpoint: str = ""
 
 
 @dataclasses.dataclass
@@ -451,22 +459,73 @@ def http_json(
     return HttpProbe(ok=False, error=str(error))
 
 
-def discover_cdp_endpoint(config: ServiceConfig) -> str:
-  """Resolve the private, non-zero DevTools endpoint.
+def http_endpoint(host: str, port: int) -> str:
+  authority = f"[{host}]" if ":" in host and not host.startswith("[") else host
+  return f"http://{authority}:{port}"
 
-  ``auto`` is retained as a compatibility spelling for the fixed hardened
-  default; it no longer requests Chromium's automation-signalling port zero.
-  """
-  if config.cdp_endpoint != "auto":
-    return config.cdp_endpoint
-  return DEFAULT_CDP_ENDPOINT
+
+def read_devtools_active_port(profile: Path) -> tuple[int | None, str, str]:
+  """Read Chromium's profile-owned DevTools endpoint identity."""
+  try:
+    lines = (profile / "DevToolsActivePort").read_text(
+        encoding="utf-8").splitlines()
+    port = int(lines[0])
+    browser_guid = lines[1].strip()
+  except (OSError, IndexError, ValueError):
+    return None, "", "profile DevToolsActivePort marker is unavailable"
+  if not 1 <= port <= 65535 or not browser_guid.startswith("/devtools/browser/"):
+    return None, "", "profile DevToolsActivePort marker is invalid"
+  return port, browser_guid, ""
+
+
+def profile_cdp_endpoint(config: ServiceConfig) -> tuple[str, str]:
+  """Resolve CDP only from the configured profile's Chromium marker."""
+  port, _guid, error = read_devtools_active_port(config.profile)
+  if port is None:
+    return "", error
+  if config.cdp_endpoint == "auto":
+    return http_endpoint("127.0.0.1", port), ""
+  host, configured_port = endpoint_host_port(config.cdp_endpoint, 80)
+  if configured_port != port:
+    return "", "configured CDP endpoint does not match the profile marker"
+  return http_endpoint(host, port), ""
+
+
+def discover_cdp_endpoint(config: ServiceConfig) -> str:
+  """Return a profile-owned non-zero DevTools endpoint, if available."""
+  endpoint, _error = profile_cdp_endpoint(config)
+  return endpoint
+
+
+def profile_cdp_matches(profile: Path, host: str, port: int) -> bool:
+  """Return whether a loopback endpoint is the browser recorded by `profile`."""
+  marker_port, browser_guid, _error = read_devtools_active_port(profile)
+  if marker_port != port:
+    return False
+  probe = http_json(http_endpoint(host, port) + "/json/version", timeout=1)
+  if not probe.ok:
+    return False
+  websocket_url = str((probe.payload or {}).get("webSocketDebuggerUrl") or "")
+  return urlparse(websocket_url).path == browser_guid
 
 
 def cdp_probe(config: ServiceConfig) -> HttpProbe:
-  endpoint = discover_cdp_endpoint(config)
+  endpoint, error = profile_cdp_endpoint(config)
   if not endpoint:
-    return HttpProbe(False, error="private CDP endpoint is not available")
-  return http_json(endpoint + "/json/version", timeout=2)
+    return HttpProbe(False, error=error)
+  if profile_browser_pid(config) is None:
+    return HttpProbe(False, error="no live browser owns the configured profile")
+  port, browser_guid, marker_error = read_devtools_active_port(config.profile)
+  if port is None:
+    return HttpProbe(False, error=marker_error)
+  probe = http_json(endpoint + "/json/version", timeout=2)
+  if not probe.ok:
+    return probe
+  websocket_url = str((probe.payload or {}).get("webSocketDebuggerUrl") or "")
+  if urlparse(websocket_url).path != browser_guid:
+    return HttpProbe(False, status=probe.status,
+                     error="CDP listener does not match the profile browser")
+  return dataclasses.replace(probe, endpoint=endpoint)
 
 
 def broker_probe(config: ServiceConfig, token: str) -> HttpProbe:
@@ -663,13 +722,12 @@ def start_browser(config: ServiceConfig) -> int:
   return process.pid
 
 
-def start_broker(config: ServiceConfig, token: str) -> int:
+def start_broker(config: ServiceConfig, token: str, cdp_endpoint: str) -> int:
   if not config.broker_script.exists():
     raise ServiceError(f"broker script not found: {config.broker_script}")
   host, port = endpoint_host_port(config.broker_url, 8877)
   config.broker_log.parent.mkdir(parents=True, exist_ok=True)
   broker_log = config.broker_log.open("ab", buffering=0)
-  cdp_endpoint = discover_cdp_endpoint(config)
   if not cdp_endpoint:
     broker_log.close()
     raise ServiceError("cannot start broker before private CDP is ready")
@@ -738,6 +796,12 @@ def wait_for_probe(
 
 def ensure_service(config: ServiceConfig) -> dict[str, Any]:
   ensure_state_dir(config)
+  try:
+    claim_profile(
+        config.profile, "automation",
+        allow_sharing=is_truthy_env("HARDENED_ALLOW_PROFILE_SHARING"))
+  except ProductError as error:
+    raise ServiceError(str(error), code="profile_role_conflict") from error
   with ServiceLock(config.lock_file):
     token = read_or_create_token(config)
     append_lifecycle_event(config, "ensure_requested", brokerUrl=config.broker_url)
@@ -794,7 +858,7 @@ def ensure_service(config: ServiceConfig) -> dict[str, Any]:
 
     broker_started = False
     if not broker.ok:
-      broker_pid = start_broker(config, token)
+      broker_pid = start_broker(config, token, cdp.endpoint)
       broker_started = True
       broker = wait_for_probe(
           lambda: broker_probe(config, token), config.timeout_seconds,
@@ -816,13 +880,27 @@ def ensure_service(config: ServiceConfig) -> dict[str, Any]:
 def capabilities_document(config: ServiceConfig) -> dict[str, Any]:
   """Return the public contract without touching runtime state or CDP."""
   expected_binary = Path(os.environ.get(
-      "HARDENED_CHROMIUM_BINARY", str(SOURCE_DIR / "out/Hardened/chrome")))
+      "HARDENED_CHROMIUM_BINARY",
+      str(SOURCE_DIR / "out/HardenedAutomation/chrome")))
   required = {
       "launcher": config.launcher,
       "brokerScript": config.broker_script,
       "chromiumBinary": expected_binary,
   }
   missing = [name for name, path in required.items() if not path.exists()]
+  if expected_binary.exists():
+    try:
+      verify_binary_product(
+          expected_binary, "automation",
+          allow_unverified=is_truthy_env("HARDENED_ALLOW_UNVERIFIED_BINARY"))
+    except ProductError:
+      missing.append("chromiumBuild")
+  adapter_pack = Path(os.environ.get(
+      "HARDENED_ADAPTER_PACK", str(DEFAULT_PACK_DIR))).expanduser().resolve()
+  try:
+    load_adapter_pack(adapter_pack)
+  except AdapterError:
+    missing.append("adapterPack")
   command = os.environ.get(
       "HARDENED_CHROMIUM_SERVICE_COMMAND", Path(sys.argv[0]).name)
   return {
@@ -836,6 +914,7 @@ def capabilities_document(config: ServiceConfig) -> dict[str, Any]:
           "launcher": str(config.launcher),
           "brokerScript": str(config.broker_script),
           "chromiumBinary": str(expected_binary),
+          "adapterPack": str(adapter_pack),
           "missing": missing,
       },
   }
@@ -855,9 +934,11 @@ def status_document(
       "ok": cdp.ok and broker.ok,
       "auth": "none" if config.no_auth else "token",
       "cdp": {
-          "ready": cdp.ok,
-          "status": cdp.status,
-          "error": cdp.error,
+        "ready": cdp.ok,
+        "status": cdp.status,
+        "error": cdp.error,
+        "endpoint": cdp.endpoint,
+        "profileVerified": cdp.ok and bool(cdp.endpoint),
       },
       "broker": {
           "url": config.broker_url,

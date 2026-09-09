@@ -5,7 +5,7 @@ set -euo pipefail
 script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source_directory="$(cd "${script_directory}/../.." && pwd)"
 source "${script_directory}/performance_binary.sh"
-chromium_binary="$(resolve_hardened_chromium_binary "${source_directory}")"
+chromium_binary="$(resolve_hardened_chromium_binary "${source_directory}" automation)"
 automation_profile="${HARDENED_AUTOMATION_PROFILE:-${source_directory}/out/HardenedAutomationProfile}"
 profile_directory="${HARDENED_CHROMIUM_PROFILE_DIRECTORY:-Default}"
 remote_debugging_address="${HARDENED_REMOTE_DEBUGGING_ADDRESS:-127.0.0.1}"
@@ -50,6 +50,21 @@ fi
 
 mkdir -p "${automation_profile}"
 chmod 700 "${automation_profile}" 2>/dev/null || true
+
+product_validation_args=(
+  --product automation
+  --binary "${chromium_binary}"
+  --profile "${automation_profile}"
+)
+if [[ "${HARDENED_ALLOW_PROFILE_SHARING:-0}" == "1" ]]; then
+  product_validation_args+=(--allow-profile-sharing)
+fi
+if [[ "${HARDENED_ALLOW_UNVERIFIED_BINARY:-0}" == "1" ]]; then
+  product_validation_args+=(--allow-unverified-binary)
+fi
+python3 "${script_directory}/hardened_product.py" \
+  "${product_validation_args[@]}" >/dev/null
+claim_hardened_profile_process_lock "${automation_profile}" automation
 
 if [[ "${remote_debugging_address}" != "127.0.0.1" &&
       "${remote_debugging_address}" != "::1" &&
@@ -109,13 +124,13 @@ if [[ "${microphone_source}" != "fake" && "${microphone_source}" != "real" ]]; t
   exit 1
 fi
 
-  extra_flags+=(
-    --hardened-selectable-media-sources
-    --hardened-default-camera-source="${camera_source}"
-    --hardened-default-microphone-source="${microphone_source}"
-    --hardened-private-camera-backend="${media_mode}"
-    --hardened-private-camera-name="${obs_camera_name}"
-  )
+extra_flags+=(
+  --hardened-selectable-media-sources
+  --hardened-default-camera-source="${camera_source}"
+  --hardened-default-microphone-source="${microphone_source}"
+  --hardened-private-camera-backend="${media_mode}"
+  --hardened-private-camera-name="${obs_camera_name}"
+)
 
 extra_flags+=(
   --hardened-default-location-source="${HARDENED_LOCATION_SOURCE:-fake}"

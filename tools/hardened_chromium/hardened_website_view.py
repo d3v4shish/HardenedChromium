@@ -77,7 +77,12 @@ DEFAULT_DOCUMENT: dict[str, Any] = {
 
 
 def normalize_origin(value: Any) -> str:
-  """Return an exact http(s) origin, or an empty string for invalid input."""
+  """Return an exact http(s) origin for a URL or origin, or an empty string.
+
+  Callers commonly have a page URL rather than a bare origin.  Canonicalizing
+  it here is safe: path, query, and fragment data cannot widen a rule because
+  the persisted value is always the URL origin.
+  """
   text = str(value or "").strip()
   try:
     parsed = urlparse(text)
@@ -85,9 +90,7 @@ def normalize_origin(value: Any) -> str:
     return ""
   if parsed.scheme not in ("http", "https") or not parsed.hostname:
     return ""
-  if parsed.username or parsed.password or parsed.path not in ("", "/"):
-    return ""
-  if parsed.query or parsed.fragment:
+  if parsed.username or parsed.password:
     return ""
   hostname = parsed.hostname.lower()
   try:
@@ -132,6 +135,43 @@ def _exposure(_name: str, value: Any, fallback: Any) -> Any:
 
 def _json_object(value: Any) -> dict[str, Any]:
   return copy.deepcopy(value) if isinstance(value, dict) else {}
+
+
+def validate_policy_for_save(
+    value: Any, *, require_origin: bool = False, default_policy: bool = False,
+) -> None:
+  """Reject malformed fields the current browser actively enforces."""
+  if not isinstance(value, dict):
+    raise ValueError("policy must be a JSON object")
+  if require_origin and not normalize_origin(value.get("origin")):
+    raise ValueError("origin must be an http(s) website origin")
+  for name in ("cameraSource", "microphoneSource", "locationSource"):
+    if name in value and value[name] not in SOURCE_VALUES:
+      raise ValueError(f"{name} must be fake or real")
+  if "exposures" in value and not isinstance(value["exposures"], dict):
+    raise ValueError("exposures must be a JSON object")
+  exposures = value.get("exposures", {})
+  if (default_policy and "automation" in exposures and
+      exposures["automation"] not in EXPOSURE_VALUES["automation"]):
+    raise ValueError("default automation must be hide or report")
+
+
+def validate_document_for_save(value: Any) -> None:
+  """Validate only the supported fields while retaining future fields."""
+  if not isinstance(value, dict):
+    raise ValueError("Website View document must be a JSON object")
+  if not isinstance(value.get("default"), dict):
+    raise ValueError("Website View document requires a default policy")
+  if not isinstance(value.get("rules"), list):
+    raise ValueError("Website View document requires a rules list")
+  validate_policy_for_save(value["default"], default_policy=True)
+  seen: set[str] = set()
+  for rule in value["rules"]:
+    validate_policy_for_save(rule, require_origin=True)
+    origin = normalize_origin(rule["origin"])
+    if origin in seen:
+      raise ValueError("Website View rules must not repeat an origin")
+    seen.add(origin)
 
 
 def _persona(value: Any, fallback: dict[str, Any]) -> dict[str, Any]:
@@ -299,3 +339,25 @@ def warnings_for_policy(policy: dict[str, Any]) -> list[str]:
   if exposures.get("automation") == "report":
     warnings.append("Reporting automation exposes navigator.webdriver.")
   return warnings
+
+
+def enforcement_metadata() -> dict[str, Any]:
+  """Describe which document fields the current browser actually consumes."""
+  return {
+      "enforced": {
+          "default": [
+              "cameraSource", "microphoneSource", "locationSource",
+              "exposures.automation",
+          ],
+          "rules": [
+              "cameraSource", "microphoneSource", "locationSource",
+          ],
+      },
+      "restartRequired": ["default.exposures.automation"],
+      "retainedOnly": [
+          "persona", "exposures.canvas", "exposures.webgl",
+          "exposures.audio", "exposures.webRtc", "exposures.localFonts",
+          "exposures.highEntropyApis", "exposures.deviceEnumeration",
+          "exposures.behavior", "rules[].exposures.automation",
+      ],
+  }
